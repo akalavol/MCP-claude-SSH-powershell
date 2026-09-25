@@ -98,6 +98,13 @@ def format_audit(entry: dict[str, Any]) -> str:
     return f"{ts}  {mark:<6} {entry.get('tool', '?'):<18} {entry.get('host') or '-':<16}{via}"
 
 
+BACKEND_LABELS = {
+    "ssh": "SSH (Linux, ou Windows avec OpenSSH)",
+    "winrm": "PowerShell Remoting (WinRM)",
+    "local": "Ce PC (local)",
+}
+
+
 def form_to_host(form: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Champs du formulaire -> entrée de hosts.yaml. Les champs non gérés par le formulaire
     (projects, docker, services, log_sources...) d'une entrée existante sont conservés."""
@@ -110,15 +117,24 @@ def form_to_host(form: dict[str, Any], existing: dict[str, Any] | None = None) -
     if backend in ("ssh", "winrm"):
         for key in ("host", "user", "key", "ssh_alias"):
             value = str(form.get(key) or "").strip()
-            if value and not (backend == "winrm" and key in ("key", "ssh_alias")):
+            if value and not (backend == "winrm" and key in ("user", "key", "ssh_alias")):
                 data[key] = value.replace("\\", "/") if key == "key" else value
         port = str(form.get("port") or "").strip()
         if port:
             if not port.isdigit():
                 raise ValueError(f"port invalide : {port!r}")
             data["port"] = int(port)
-        if backend == "winrm" and form.get("use_ssl"):
-            data["winrm"] = {"use_ssl": True}
+        if backend == "winrm":
+            data["os"] = "windows"
+            winrm = dict((existing or {}).get("winrm") or {})
+            winrm.pop("use_ssl", None)
+            winrm.pop("port", None)
+            if form.get("use_ssl"):
+                winrm["use_ssl"] = True
+            if "port" in data:  # le backend WinRM lit winrm.port
+                winrm["port"] = data.pop("port")
+            if winrm:
+                data["winrm"] = winrm
     perms = ["read"] + (["dev"] if form.get("dev") else [])
     data["permissions"] = perms
     paths = [p.strip().replace("\\", "/") for p in str(form.get("allowed_paths") or "").splitlines() if p.strip()]
@@ -135,7 +151,7 @@ def host_to_form(raw: dict[str, Any]) -> dict[str, Any]:
         "os": raw.get("os", "linux"),
         "backend": "winrm" if raw.get("backend") == "powershell" else raw.get("backend", "ssh"),
         "host": raw.get("host", ""), "user": raw.get("user", ""),
-        "port": str(raw.get("port") or ""), "key": raw.get("key", ""),
+        "port": str(raw.get("port") or (raw.get("winrm") or {}).get("port") or ""), "key": raw.get("key", ""),
         "ssh_alias": raw.get("ssh_alias", ""),
         "use_ssl": bool((raw.get("winrm") or {}).get("use_ssl")),
         "dev": "dev" in (raw.get("permissions") or []),
@@ -429,7 +445,7 @@ class HostDialog:
         self.vars: dict[str, Any] = {
             "name": tk.StringVar(value=name or ""),
             "os": tk.StringVar(value=form["os"]),
-            "backend": tk.StringVar(value=form["backend"]),
+            "backend": tk.StringVar(value=BACKEND_LABELS[form["backend"]]),
             "host": tk.StringVar(value=form["host"]),
             "user": tk.StringVar(value=form["user"]),
             "port": tk.StringVar(value=form["port"]),
@@ -457,8 +473,8 @@ class HostDialog:
 
         line("Nom", ttk.Entry(frm, textvariable=self.vars["name"]), hint="ex. serveur-maison")
         line("Système", ttk.Combobox(frm, textvariable=self.vars["os"], values=("linux", "windows"), state="readonly"))
-        line("Connexion", ttk.Combobox(frm, textvariable=self.vars["backend"], values=("ssh", "winrm", "local"),
-                                       state="readonly"), hint="local = ce PC")
+        line("Connexion", ttk.Combobox(frm, textvariable=self.vars["backend"], values=tuple(BACKEND_LABELS.values()),
+                                       state="readonly", width=38))
         line("Hôte (IP ou nom)", ttk.Entry(frm, textvariable=self.vars["host"]), "host", "ex. 192.168.1.20")
         line("Utilisateur", ttk.Entry(frm, textvariable=self.vars["user"]), "user")
         line("Port", ttk.Entry(frm, textvariable=self.vars["port"], width=8), "port", "vide = défaut")
@@ -469,6 +485,9 @@ class HostDialog:
         line("ou alias ~/.ssh/config", ttk.Entry(frm, textvariable=self.vars["ssh_alias"]), "ssh_alias",
              "remplace hôte/utilisateur/clé")
         line("", ttk.Checkbutton(frm, text="HTTPS (WinRM sur 5986)", variable=self.vars["use_ssl"]), "use_ssl")
+        line("", ttk.Label(frm, foreground="#777", wraplength=360, text=(
+            "Connexion avec ton compte Windows actuel (pas de mot de passe stocké). Hors domaine, la machine "
+            "doit être dans TrustedHosts ; « Tester la connexion » le vérifie.")), "winrm_note")
         line("Droits", ttk.Checkbutton(frm, text="Autoriser l'écriture et les commandes (dev)",
                                        variable=self.vars["dev"]), hint="lecture toujours permise")
 
@@ -498,6 +517,7 @@ class HostDialog:
     # -- helpers
     def _form(self) -> dict[str, Any]:
         f = {k: v.get() for k, v in self.vars.items()}
+        f["backend"] = self._backend()
         f["allowed_paths"] = self.paths.get("1.0", "end")
         return f
 
@@ -512,9 +532,16 @@ class HostDialog:
         HostConfig.model_validate({**data, "name": name})  # erreur affichée avant d'écrire
         return name, data
 
+    def _backend(self) -> str:
+        label = self.vars["backend"].get()
+        return next((k for k, v in BACKEND_LABELS.items() if v == label), label)
+
     def _toggle(self) -> None:
+        backend = self._backend()
+        if backend == "winrm":  # PowerShell Remoting ne cible que Windows
+            self.vars["os"].set("windows")
         visible = {"ssh": {"host", "user", "port", "key", "ssh_alias"},
-                   "winrm": {"host", "user", "port", "use_ssl"}, "local": set()}[self.vars["backend"].get()]
+                   "winrm": {"host", "port", "use_ssl", "winrm_note"}, "local": set()}[backend]
         for key, parts in self.widgets.items():
             for w in parts:
                 if key in visible:

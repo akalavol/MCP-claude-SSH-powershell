@@ -81,6 +81,16 @@ def test_host_form_and_save(tmp_path):
         save_host("bad", {**data, "allowed_paths": ["/"]}, config_dir=cdir)
     with pytest.raises(ValueError):
         ui.form_to_host({**form, "allowed_paths": "  "})
+    # PowerShell Remoting : Windows forcé, port et HTTPS rangés sous winrm:, pas d'utilisateur
+    win = ui.form_to_host({**form, "backend": "winrm", "os": "linux", "use_ssl": True,
+                           "allowed_paths": "C:\\Projet\\Test"})
+    assert win["os"] == "windows" and "user" not in win and "port" not in win
+    assert win["winrm"] == {"use_ssl": True, "port": 2222}
+    assert ui.host_to_form(win)["port"] == "2222"
+    save_host("pc-win", win, config_dir=cdir)
+    assert load_config(cdir).hosts["pc-win"].winrm.port == 2222
+    delete_host("pc-win", config_dir=cdir)
+
     delete_host("srv2", config_dir=cdir)
     assert load_config(cdir).hosts == {}
 

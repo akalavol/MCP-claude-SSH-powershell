@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import shutil
+import sys
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 
 # Codes de sortie réservés émis par les gardes des scripts distants.
 RC_DENIED = 97
@@ -23,6 +26,16 @@ PS_BOOTSTRAP = (
 )
 PS_BOOTSTRAP_ENCODED = base64.b64encode(PS_BOOTSTRAP.encode("utf-16-le")).decode("ascii")
 PWSH_ARGS = ["-NoProfile", "-NonInteractive", "-NoLogo", "-EncodedCommand", PS_BOOTSTRAP_ENCODED]
+
+
+@lru_cache(maxsize=1)
+def local_pwsh() -> str:
+    """PowerShell de la machine du MCP : pwsh (7) si installé, sinon Windows PowerShell 5.1."""
+    if shutil.which("pwsh"):
+        return "pwsh"
+    if sys.platform == "win32" and shutil.which("powershell"):
+        return "powershell"
+    return "pwsh"  # l'erreur « introuvable » mentionnera pwsh
 
 
 @dataclass

@@ -1,4 +1,5 @@
-"""Backend WinRM : `Invoke-Command -ComputerName` depuis le pwsh local.
+"""Backend WinRM (PowerShell Remoting) : `Invoke-Command -ComputerName` depuis le
+PowerShell local (pwsh 7, ou Windows PowerShell 5.1 à défaut).
 
 Le script distant est transporté en base64 (jamais interpolé dans du code), les
 données via -ArgumentList. Sortie, erreurs et code retour reviennent dans un objet,
@@ -15,6 +16,7 @@ import base64
 
 from ..config import HostConfig
 from .base import PWSH_ARGS, Backend, ExecResult, ps_stdin, run_process
+from .base import local_pwsh as default_pwsh
 
 
 def _ps_literal(value: str) -> str:
@@ -22,9 +24,9 @@ def _ps_literal(value: str) -> str:
 
 
 class WinRMBackend(Backend):
-    def __init__(self, host: HostConfig, local_pwsh: str = "pwsh"):
+    def __init__(self, host: HostConfig, local_pwsh: str | None = None):
         self.host = host
-        self.local_pwsh = local_pwsh
+        self.local_pwsh = local_pwsh or default_pwsh()
 
     def wrapper(self, script: str) -> str:
         h = self.host
