@@ -70,6 +70,8 @@ class HostConfig(_Strict):
     port: int | None = None
     key: str | None = None
     ssh_alias: str | None = None
+    # Empreinte attendue de la clé d'hôte (SHA256:…) : épinglée dans config/known_hosts.
+    host_key_sha256: str | None = None
     # default : clé SSH (ssh) / compte Windows courant (winrm).
     # password : identifiant `user` + mot de passe chiffré dans config/credentials.dat.
     auth: Literal["default", "password"] = "default"
@@ -98,6 +100,10 @@ class HostConfig(_Strict):
             raise RuntimeError(f"aucun mot de passe enregistré pour {self.name!r} (le saisir dans l'interface)")
         return blob
 
+    def known_hosts_file(self) -> Path:
+        """Fichier known_hosts propre à RemoteDev (clés épinglées par host_key_sha256)."""
+        return (self._config_dir or resolve_config_dir()) / "known_hosts"
+
     @model_validator(mode="after")
     def _normalize(self) -> "HostConfig":
         if self.backend == "powershell":
@@ -118,6 +124,14 @@ class HostConfig(_Strict):
         for value in (self.host, self.ssh_alias):
             if value is not None and not _HOST_RE.match(value):
                 raise ValueError(f"nom d'hôte invalide : {value!r}")
+        if self.host_key_sha256:
+            from .hostkey import normalize_fingerprint
+
+            if self.backend != "ssh":
+                raise ValueError("host_key_sha256 : backend ssh uniquement")
+            if self.ssh_alias:
+                raise ValueError("host_key_sha256 incompatible avec ssh_alias (utiliser host)")
+            self.host_key_sha256 = normalize_fingerprint(self.host_key_sha256)
         if self.user is not None and not _NAME_RE.match(self.user.replace("\\", "")):
             raise ValueError(f"utilisateur invalide : {self.user!r}")
         if self.key:

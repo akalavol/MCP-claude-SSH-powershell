@@ -7,6 +7,7 @@ import shlex
 import sys
 from pathlib import Path
 
+from .. import hostkey
 from ..config import HostConfig
 from .base import PWSH_ARGS, RC_TIMEOUT, Backend, ExecResult, ps_stdin, run_process
 
@@ -37,6 +38,11 @@ class SSHBackend(Backend):
         if h.ssh_alias:
             argv.append(h.ssh_alias)
             return argv
+        if h.host_key_sha256:
+            # Uniquement la clé épinglée ; guillemets : le chemin peut contenir des espaces.
+            kh = h.known_hosts_file().as_posix()
+            argv += ["-o", f'UserKnownHostsFile="{kh}"', "-o", "StrictHostKeyChecking=yes",
+                     "-o", f"HostKeyAlias={hostkey.alias(h.name)}"]
         if h.port:
             argv += ["-p", str(h.port)]
         if h.key and h.auth != "password":
@@ -45,6 +51,30 @@ class SSHBackend(Backend):
             argv += ["-l", h.user]
         argv.append(h.host or "")
         return argv
+
+    def keyscan_binary(self) -> str:
+        ssh = Path(self.ssh_binary)
+        return str(ssh.with_name("ssh-keyscan" + ssh.suffix)) if ssh.parent != Path(".") else "ssh-keyscan"
+
+    async def ensure_host_key(self) -> None:
+        """Épingle la clé d'hôte si host_key_sha256 est renseigné et qu'elle ne l'est pas encore."""
+        h = self.host
+        expected = h.host_key_sha256
+        if not expected:
+            return
+        path, name = h.known_hosts_file(), hostkey.alias(h.name)
+        if hostkey.is_pinned(path, name, expected):
+            return
+        # host est validé par la config : il ne commence jamais par « - ».
+        argv = [self.keyscan_binary(), "-T", "10"] + (["-p", str(h.port)] if h.port else []) + [h.host or ""]
+        res = await run_process(argv, None, 20)
+        key, seen = hostkey.find_key(res.stdout, expected)
+        if key is None:
+            if not seen:
+                err = (res.stderr.strip().splitlines() or [f"exit {res.exit_code}"])[-1]
+                raise RuntimeError(f"clé d'hôte illisible (ssh-keyscan) : {err}")
+            raise RuntimeError(f"empreinte refusée : le serveur présente {', '.join(seen)} au lieu de {expected}")
+        hostkey.pin(path, name, *key)
 
     def env(self) -> dict[str, str] | None:
         """Environnement de ssh : askpass en mode mot de passe (rien de secret dedans)."""
@@ -66,6 +96,7 @@ class SSHBackend(Backend):
 
     async def run(self, script: str, stdin: bytes | None = None, timeout: int = 60) -> ExecResult:
         env = self.env()
+        await self.ensure_host_key()
         if self.host.is_posix_shell:
             # `timeout` distant : le processus distant meurt même si la connexion est coupée.
             remote = f"timeout -k 5 {int(timeout)} sh -c {shlex.quote(script)}"

@@ -130,7 +130,8 @@ def form_to_host(form: dict[str, Any], existing: dict[str, Any] | None = None) -
     """Champs du formulaire -> entrée de hosts.yaml. Les champs non gérés par le formulaire
     (projects, docker, services, log_sources...) d'une entrée existante sont conservés."""
     data = dict(existing or {})
-    for key in ("os", "backend", "host", "user", "port", "key", "ssh_alias", "winrm", "auth", "ps_exe"):
+    for key in ("os", "backend", "host", "user", "port", "key", "ssh_alias", "winrm", "auth", "ps_exe",
+                "host_key_sha256"):
         data.pop(key, None)
     backend, os_name, ps_exe = CONNECTION_TYPES[form["kind"]]
     if backend == "local" and existing and existing.get("backend") == "local":
@@ -157,6 +158,9 @@ def form_to_host(form: dict[str, Any], existing: dict[str, Any] | None = None) -
             if not port.isdigit():
                 raise ValueError(f"port invalide : {port!r}")
             data["port"] = int(port)
+        fingerprint = str(form.get("host_key_sha256") or "").strip()
+        if backend == "ssh" and fingerprint:
+            data["host_key_sha256"] = fingerprint
         if backend == "winrm":
             winrm = dict((existing or {}).get("winrm") or {})
             winrm.pop("use_ssl", None)
@@ -174,7 +178,8 @@ def form_to_host(form: dict[str, Any], existing: dict[str, Any] | None = None) -
         raise ValueError("indiquer au moins un dossier autorisé")
     data["allowed_paths"] = paths
     # ordre lisible dans le YAML
-    order = ["os", "backend", "ps_exe", "host", "port", "user", "auth", "key", "ssh_alias", "permissions",
+    order = ["os", "backend", "ps_exe", "host", "port", "user", "auth", "key", "ssh_alias", "host_key_sha256",
+             "permissions",
              "allowed_paths"]
     return {k: data[k] for k in order if k in data} | {k: v for k, v in data.items() if k not in order}
 
@@ -185,6 +190,7 @@ def host_to_form(raw: dict[str, Any]) -> dict[str, Any]:
         "host": raw.get("host", ""), "user": raw.get("user", ""),
         "port": str(raw.get("port") or (raw.get("winrm") or {}).get("port") or ""), "key": raw.get("key", ""),
         "ssh_alias": raw.get("ssh_alias", ""),
+        "host_key_sha256": raw.get("host_key_sha256", ""),
         "auth": raw.get("auth", "default"),
         "use_ssl": bool((raw.get("winrm") or {}).get("use_ssl")),
         "dev": "dev" in (raw.get("permissions") or []),
@@ -487,6 +493,7 @@ class HostDialog:
             "port": tk.StringVar(value=form["port"]),
             "key": tk.StringVar(value=form["key"]),
             "ssh_alias": tk.StringVar(value=form["ssh_alias"]),
+            "host_key_sha256": tk.StringVar(value=form["host_key_sha256"]),
             "use_ssl": tk.BooleanVar(value=form["use_ssl"]),
             "dev": tk.BooleanVar(value=form["dev"]),
         }
@@ -524,6 +531,11 @@ class HostDialog:
         line("Clé SSH privée", key_row, "key", "fichier sans .pub")
         line("ou alias ~/.ssh/config", ttk.Entry(frm, textvariable=self.vars["ssh_alias"]), "ssh_alias",
              "remplace hôte/login/clé")
+        line("Empreinte SHA256", ttk.Entry(frm, textvariable=self.vars["host_key_sha256"]), "host_key_sha256",
+             "SHA256:… (recommandé)")
+        line("", ttk.Label(frm, foreground="#777", wraplength=380, text=(
+            "Sur la cible : ssh-keygen -lf C:\\ProgramData\\ssh\\ssh_host_ed25519_key.pub (Windows) ou "
+            "/etc/ssh/ssh_host_ed25519_key.pub (Linux). Toute autre clé sera refusée.")), "fp_note")
         line("", ttk.Checkbutton(frm, text="HTTPS (WinRM sur 5986)", variable=self.vars["use_ssl"]), "use_ssl")
         line("", ttk.Label(frm, foreground="#777", wraplength=380, text=(
             "Hors domaine Active Directory, la machine doit être dans les TrustedHosts de ce PC "
@@ -594,7 +606,8 @@ class HostDialog:
                 return  # le trace sur auth rappelle _toggle
         password = self._password_mode()
         visible = {
-            "ssh": {"host", "port", "auth", "user"} | ({"password"} if password else {"key", "ssh_alias"}),
+            "ssh": {"host", "port", "auth", "user", "host_key_sha256", "fp_note"}
+                   | ({"password"} if password else {"key", "ssh_alias"}),
             "winrm": {"host", "port", "auth", "use_ssl", "winrm_note"} | ({"user", "password"} if password else set()),
             "local": set(),
         }[backend]
@@ -695,8 +708,11 @@ def connection_hint(detail: str) -> str:
     """Conseil pour les erreurs de connexion les plus fréquentes."""
     d = detail.lower()
     if "host key verification failed" in d:
-        return ("\nEmpreinte du serveur inconnue : lancer une fois « ssh login@hôte » dans un terminal "
-                "et répondre « yes », puis retester.")
+        return ("\nClé du serveur inconnue ou modifiée : renseigner « Empreinte SHA256 » (relevée sur la cible), "
+                "ou lancer une fois « ssh login@hôte » dans un terminal et vérifier l'empreinte avant « yes ».")
+    if "empreinte refusée" in d:
+        return ("\nLe serveur ne présente pas la clé attendue : revérifier l'empreinte sur la cible. "
+                "Si elle n'a pas changé, ne pas se connecter (possible interception).")
     if "permission denied" in d:
         return "\nIdentifiant, mot de passe ou clé refusé par le serveur."
     if "trustedhosts" in d:

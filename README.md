@@ -69,8 +69,15 @@ PowerShell qui crée le `PSCredential`. Le mot de passe n'est disponible que sou
 une clé SSH reste préférable.
 
 **Tester la connexion** vérifie l'accès avant d'enregistrer. L'empreinte d'un serveur SSH
-inconnu n'est jamais acceptée automatiquement : lance une fois `ssh login@hôte` dans un
-terminal. Après une modification, redémarre les serveurs déjà lancés.
+inconnu n'est jamais acceptée automatiquement. Deux possibilités :
+- renseigner **Empreinte SHA256** (`host_key_sha256`), relevée sur la cible avec
+  `ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub` (Windows) ou
+  `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` (Linux). RemoteDev lit la clé avec
+  `ssh-keyscan`, ne l'enregistre dans `config/known_hosts` que si son empreinte correspond,
+  puis se connecte avec `StrictHostKeyChecking=yes` sur ce seul fichier ;
+- ou lancer une fois `ssh login@hôte` dans un terminal et vérifier l'empreinte avant « yes ».
+
+Après une modification, redémarre les serveurs déjà lancés.
 
 L'interface n'ouvre aucun port. Elle lit `logs/run/*.json`, que chaque instance écrit
 (ce dossier contient l'URL secrète et n'est jamais commité). Fermer la fenêtre n'arrête pas

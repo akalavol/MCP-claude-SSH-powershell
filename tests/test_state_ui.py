@@ -231,3 +231,58 @@ def test_ui_window(tmp_path, run_dir, monkeypatch):
     finally:
         state.remove()
         root.destroy()
+
+
+def test_host_key_pinning(tmp_path, monkeypatch):
+    import asyncio
+    import base64
+    import hashlib
+
+    from remotedev import hostkey
+    from remotedev.backends import ssh_backend
+    from remotedev.backends.base import ExecResult
+    from remotedev.config import load_config, save_host
+
+    good, other = base64.b64encode(b"\x00cle-ed25519").decode(), base64.b64encode(b"\x00cle-rsa").decode()
+    fp = "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(good)).digest()).decode().rstrip("=")
+    assert hostkey.normalize_fingerprint(fp[7:] + "=") == fp
+    with pytest.raises(ValueError):
+        hostkey.normalize_fingerprint("SHA256:trop-court")
+
+    cdir = tmp_path / "cfg"
+    form = {"kind": "ssh-linux", "host": "10.0.0.5", "user": "bob", "port": "2222", "key": "", "ssh_alias": "",
+            "use_ssl": False, "dev": False, "allowed_paths": "/srv/app", "host_key_sha256": f"  {fp[7:]} "}
+    data = ui.form_to_host(form)
+    assert ui.host_to_form(data)["host_key_sha256"] == fp[7:]
+    assert "host_key_sha256" not in ui.form_to_host({**form, "kind": "winrm", "allowed_paths": "C:/P"})
+    with pytest.raises(ValueError):  # un alias ~/.ssh/config gère sa propre clé d'hôte
+        save_host("x", {**data, "ssh_alias": "srv"}, config_dir=cdir)
+    save_host("srv", data, config_dir=cdir)
+    host = load_config(cdir).hosts["srv"]
+    assert host.host_key_sha256 == fp
+
+    ssh = ssh_backend.SSHBackend(host)
+    argv = ssh.ssh_argv()
+    assert "StrictHostKeyChecking=yes" in argv and "HostKeyAlias=remotedev-srv" in argv
+    assert f'UserKnownHostsFile="{(cdir / "known_hosts").as_posix()}"' in argv
+
+    scans: list[list[str]] = []
+    presented = [f"[10.0.0.5]:2222 ssh-rsa {other}", f"[10.0.0.5]:2222 ssh-ed25519 {good}"]
+
+    async def fake_run(argv, stdin, timeout, env=None):
+        scans.append(argv)
+        return ExecResult(0, "# commentaire\n" + "\n".join(presented) + "\n", "", 0.1)
+
+    monkeypatch.setattr(ssh_backend, "run_process", fake_run)
+    asyncio.run(ssh.ensure_host_key())
+    assert scans[0][-3:] == ["-p", "2222", "10.0.0.5"]
+    assert (cdir / "known_hosts").read_text() == f"remotedev-srv ssh-ed25519 {good}\n"
+    asyncio.run(ssh.ensure_host_key())  # déjà épinglée : pas de nouveau scan
+    assert len(scans) == 1
+
+    presented = [f"[10.0.0.5]:2222 ssh-rsa {other}"]  # autre clé : refus, rien n'est écrit
+    host.host_key_sha256 = hostkey.normalize_fingerprint("A" * 43)
+    with pytest.raises(RuntimeError, match="empreinte refusée"):
+        asyncio.run(ssh.ensure_host_key())
+    assert (cdir / "known_hosts").read_text() == f"remotedev-srv ssh-ed25519 {good}\n"
+    assert "empreinte" in ui.connection_hint("empreinte refusée : le serveur présente …")
