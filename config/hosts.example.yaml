@@ -1,0 +1,70 @@
+# Copier ce fichier en config/hosts.yaml (ignoré par git) et l'adapter.
+#
+# os      : linux | windows
+# backend : ssh    -> Linux (sh) ou Windows (PowerShell 7 over SSH, recommandé)
+#           winrm  -> Windows via Invoke-Command -ComputerName (alias : powershell)
+#           local  -> la machine qui exécute le MCP (tests)
+# permissions : read, dev (admin n'expose aucun outil)
+
+hosts:
+
+  lenovo-hermes:
+    os: linux
+    backend: ssh
+    host: 192.168.1.20
+    user: claude-dev
+    key: C:/Users/USER/.ssh/claude_dev
+    # ou, pour réutiliser une entrée de ~/.ssh/config : ssh_alias: lenovo-hermes
+    permissions: [read, dev]
+    allowed_paths:
+      - /home/claude-dev/projects/hermes
+      - /home/claude-dev/projects/test
+    projects:
+      hermes:
+        path: /home/claude-dev/projects/hermes
+        # test: ".venv/bin/python -m pytest -q"   # sinon détection automatique
+    path_prepend:
+      - /home/claude-dev/.local/bin
+    docker:
+      enabled: false          # membre du groupe docker = root. Lire le README.
+      allowed_containers: []
+    services:
+      restartable: [hermes-dev]
+      restart_mode: user      # systemctl --user ; "sudo" exige une règle sudoers dédiée
+    log_sources:
+      hermes: /home/claude-dev/projects/hermes/logs/app.log
+
+  serveur-tervya:
+    os: linux
+    backend: ssh
+    ssh_alias: serveur-tervya
+    permissions: [read, dev]
+    allowed_paths:
+      - /home/claude-dev/projects/tervya
+    docker:
+      enabled: true
+      allowed_containers: [tervya-api, tervya-db]
+
+  windows-dev:
+    os: windows
+    backend: ssh              # PowerShell 7 over SSH
+    host: PC-DEV01
+    user: claude-dev
+    key: C:/Users/USER/.ssh/claude_dev
+    permissions: [read, dev]
+    allowed_paths:
+      - C:/Projet/Tervya
+      - C:/Projet/Test
+    projects:
+      tervya:
+        path: C:/Projet/Tervya
+
+  windows-winrm:
+    os: windows
+    backend: winrm
+    host: PC-DEV02
+    permissions: [read]
+    allowed_paths:
+      - C:/Projet/Test
+    winrm:
+      use_ssl: true

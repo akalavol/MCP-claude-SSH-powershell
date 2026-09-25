@@ -1,0 +1,74 @@
+# Politique globale de RemoteDev.
+
+# safe  : lecture seule (les outils DEV ne sont même pas exposés à Claude)
+# dev   : lecture + modification des projets, tests, build (recommandé)
+# admin : réservé ; aucun outil admin n'est implémenté
+# Surchargeable par la variable d'environnement REMOTEDEV_MODE.
+mode: dev
+
+# Fichiers dont le contenu n'est jamais renvoyé ni écrit (motifs sur le nom de fichier).
+secret_patterns:
+  - ".env"
+  - ".env.*"
+  - "*.pem"
+  - "*.key"
+  - "*.p12"
+  - "*.pfx"
+  - "*.kdbx"
+  - "id_rsa"
+  - "id_rsa*"
+  - "id_ecdsa*"
+  - "id_ed25519*"
+  - "credentials.json"
+  - "secrets.json"
+  - "secrets.yaml"
+  - "secrets.yml"
+  - ".npmrc"
+  - ".pypirc"
+  - ".netrc"
+  - ".git-credentials"
+  - "*.tfstate"
+
+# Chemins toujours refusés, même s'ils se trouvent dans un allowed_path (motifs glob).
+denied_paths_posix:
+  - "/etc"
+  - "/boot"
+  - "/root"
+  - "/proc"
+  - "/sys"
+  - "/dev"
+  - "/var/lib"
+  - "*/.ssh"
+  - "*/.gnupg"
+  - "*/.aws"
+  - "*/.docker"
+  - "*/.kube"
+denied_paths_windows:
+  - "C:/Windows"
+  - "C:/Program Files"
+  - "C:/Program Files (x86)"
+  - "C:/ProgramData"
+  - "*/.ssh"
+  - "*/AppData"
+
+# Motifs regex supplémentaires interdits dans les commandes test/build de hosts.yaml.
+blocked_command_patterns: []
+
+# Interdit toute écriture sous un dossier .git (hooks = exécution de code).
+protect_git_dir: true
+
+limits:
+  max_read_bytes: 1000000
+  max_write_bytes: 2000000
+  max_output_chars: 60000
+  max_list_entries: 2000
+  max_search_results: 200
+
+timeouts:          # secondes
+  default: 60
+  tests: 900
+  build: 1800
+  git_pull: 180
+  docker_compose: 900
+
+audit_log: logs/audit.log
