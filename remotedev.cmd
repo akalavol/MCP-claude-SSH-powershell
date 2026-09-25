@@ -9,14 +9,18 @@ set "PY=%ROOT%.venv\Scripts\python.exe"
 set "PYW=%ROOT%.venv\Scripts\pythonw.exe"
 set "SRV=%ROOT%server.py"
 
-if exist "%PY%" goto :venv_ok
-echo [remotedev] Premiere utilisation : creation de l'environnement Python...
-python -m venv "%ROOT%.venv" || goto :fail
+rem Marqueur ecrit seulement apres une installation reussie (un venv a moitie cree est repare).
+if exist "%ROOT%.venv\.remotedev-ok" goto :venv_ok
+echo [remotedev] Installation de l'environnement Python...
+if not exist "%PY%" python -m venv "%ROOT%.venv" || goto :fail
 "%PY%" -m pip install -q -r "%ROOT%requirements.txt" || goto :fail
+type nul > "%ROOT%.venv\.remotedev-ok"
 :venv_ok
 
-if exist "%ROOT%config\hosts.yaml" goto :config_ok
-echo [remotedev] config\hosts.yaml manquant : copier config\hosts.example.yaml puis l'adapter.
+set "CFG=%REMOTEDEV_CONFIG_DIR%"
+if "%CFG%"=="" set "CFG=%ROOT%config"
+if exist "%CFG%\hosts.yaml" goto :config_ok
+echo [remotedev] %CFG%\hosts.yaml manquant : copier config\hosts.example.yaml puis l'adapter.
 goto :fail
 :config_ok
 

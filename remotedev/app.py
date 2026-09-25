@@ -41,6 +41,10 @@ def validate_startup(config: Config) -> list[str]:
         for pname, proj in h.projects.items():
             if not any(_within(proj.path, r, h.is_windows) for r in h.allowed_paths):
                 errors.append(f"{name}: projet {pname} ({proj.path}) hors des allowed_paths")
+        if h.backend == "winrm" and sys.platform != "win32":
+            print(f"[remotedev] ATTENTION : {name} utilise WinRM depuis un système non Windows ; pwsh sous Linux "
+                  "ne sait pas s'y connecter sans module supplémentaire. Utiliser backend: ssh (PowerShell 7 over SSH).",
+                  file=sys.stderr)
         if "admin" in h.permissions:
             print(f"[remotedev] ATTENTION : {name} a la permission admin (aucun outil admin n'est exposé)", file=sys.stderr)
     audit = Path(config.policies.audit_log)
@@ -73,6 +77,19 @@ def build_server(config: Config | None = None, server_kwargs: dict | None = None
         })
         server.tool(name=spec.func.__name__, description=spec.description, annotations=ann)(spec.func)
     return server
+
+
+def _has_display() -> bool:
+    """Affichage graphique disponible ? (faux en SSH sur un mini PC sans écran)"""
+    import os
+
+    if sys.platform != "win32" and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return False
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def _print_status() -> None:
@@ -125,7 +142,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--status", action="store_true", help="afficher les instances en cours")
     parser.add_argument("--stop", nargs="?", const="all", metavar="PID", help="arrêter l'instance HTTP (toutes par défaut)")
     parser.add_argument("--check", action="store_true", help="tester la connexion à chaque machine")
-    parser.add_argument("--ui", action="store_true", help="ouvrir la mini-interface")
+    parser.add_argument("--ui", action="store_true",
+                        help="ouvrir la mini-interface (mode texte automatique sans écran)")
+    parser.add_argument("--tui", action="store_true", help="tableau de bord en mode texte (SSH, mini PC sans écran)")
     args = parser.parse_args(argv)
     try:
         if args.status:
@@ -134,6 +153,10 @@ def main(argv: list[str] | None = None) -> None:
             return _stop(args.stop)
         if args.check:
             return _check()
+        if args.tui or (args.ui and not _has_display()):
+            from .tui import run_tui
+
+            return run_tui()
         if args.ui:
             from .ui import run_ui
 

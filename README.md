@@ -59,8 +59,8 @@ remotedev stop                 # arrête l'instance HTTP proprement (cloudflared
 remotedev check                # teste la connexion à chaque machine
 ```
 
-Sous Linux/macOS : `./remotedev.sh` avec les mêmes commandes (l'interface nécessite
-`python3-tk`).
+Sous Linux/macOS : `./remotedev.sh` avec les mêmes commandes, plus `tui`. Sans écran,
+l'interface est en mode texte (voir la section sur le mini PC).
 
 ### Claude Code
 
@@ -113,6 +113,67 @@ La console affiche une URL du type
 
 `REMOTEDEV_MODE` (`safe` | `dev`) surcharge `policies.yaml`. `REMOTEDEV_CONFIG_DIR` permet
 d'utiliser un autre dossier de configuration.
+
+## Installer RemoteDev sur un mini PC Linux dédié
+
+Le mini PC devient le point central : il détient les clés SSH vers toutes les machines et
+c'est lui qu'on expose (à la demande) à ChatGPT. Testé sous Linux (Debian/Ubuntu) ; ARM
+(Raspberry Pi) : même procédure, non testée.
+
+```bash
+sudo apt install python3-venv git openssh-client        # + python3-tk seulement si écran
+sudo adduser --disabled-password remotedev               # compte dédié, sans sudo
+sudo -iu remotedev
+git clone <ce dépôt> ~/mcp-remotedev && cd ~/mcp-remotedev
+cp config/hosts.example.yaml config/hosts.yaml           # clés : key: ~/.ssh/claude_dev
+ssh-keygen -t ed25519 -f ~/.ssh/claude_dev -N ''          # puis copier la .pub sur chaque cible
+./remotedev.sh check                                      # installe le venv, teste les machines
+```
+
+cloudflared, pour le mode HTTP : télécharger le binaire `cloudflared-linux-amd64` ou
+`cloudflared-linux-arm64` depuis les releases GitHub de Cloudflare, puis le placer dans
+`~/.local/bin/cloudflared` (et `chmod +x`).
+
+**Tableau de bord sans écran** : `ssh remotedev@mini-pc` puis `./remotedev.sh`. Sans
+affichage graphique, l'interface passe automatiquement en mode texte, utilisable depuis une
+appli SSH sur téléphone :
+
+```
+RemoteDev — 09:14:02
+HTTP  : ● en cours · pid 954 · HTTP · mode SAFE · reste 24 min · tunnel
+URL   : https://calm-river.trycloudflare.com/••••••/mcp
+stdio : aucune instance
+Prochain démarrage : 30 min · tunnel oui · écriture DEV non
+[s] démarrer  [x] arrêter  [+/-] durée  [d] écriture DEV  [t] tunnel  [u] URL  [c] tester  [q] quitter
+```
+
+La touche `u` affiche l'URL complète, à sélectionner pour la copier : pas de presse-papiers
+à travers SSH. Pour démarrer d'une seule commande : `deploy/remotedev-http.service` (unité
+systemd utilisateur, jamais lancée au démarrage).
+
+**Claude Desktop / Claude Code sur ton PC, MCP sur le mini PC** : le transport stdio passe
+tel quel à travers SSH, sans aucun port ni tunnel :
+
+```json
+{
+  "mcpServers": {
+    "remotedev": {
+      "command": "ssh",
+      "args": ["-T", "-o", "BatchMode=yes", "remotedev@mini-pc", "~/mcp-remotedev/remotedev.sh", "stdio"]
+    }
+  }
+}
+```
+
+`remotedev.sh` n'écrit rien sur stdout, qui est réservé au protocole MCP.
+
+Points spécifiques à Linux :
+- **Cibles Windows : backend `ssh` obligatoire.** Depuis Linux, `pwsh` ne sait pas faire de
+  WinRM sans module supplémentaire ; le serveur l'affiche au démarrage.
+- `key: ~/.ssh/claude_dev` est résolu sur la machine qui exécute le MCP.
+- Ce mini PC concentre les clés de toutes tes machines : chiffrement du disque, aucun
+  autre service exposé, pare-feu entrant fermé (le tunnel est sortant), compte
+  `remotedev` sans sudo, et une clé SSH distincte de ta clé personnelle.
 
 ## Préparer une machine Linux
 
@@ -294,6 +355,8 @@ réelles, WinRM réseau, Windows PowerShell 5.1.
 server.py                      point d'entrée (stdio, ou --http)
 remotedev/http_remote.py       mode HTTP à la demande + Cloudflare Quick Tunnel
 remotedev/state.py, ui.py      état des instances, mini-interface tkinter
+remotedev/tui.py               tableau de bord texte (curses) pour mini PC sans écran
+deploy/remotedev-http.service  unité systemd utilisateur (démarrage à la demande)
 remotedev/health.py            test de connexion aux machines
 remotedev.cmd, remotedev.sh    lanceurs
 remotedev/app.py               construction du serveur, filtrage par mode

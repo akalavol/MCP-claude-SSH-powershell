@@ -50,6 +50,26 @@ def build_command(minutes: int, allow_dev: bool, tunnel: bool, port: int = 8765)
     return cmd
 
 
+def launch_http(minutes: int, allow_dev: bool, tunnel: bool) -> subprocess.Popen:
+    """Lance le mode HTTP en processus détaché (survit à la fermeture de l'interface)."""
+    HTTP_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with HTTP_LOG.open("a", encoding="utf-8") as log:
+        log.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} démarrage ---\n")
+        log.flush()
+        flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+        return subprocess.Popen(build_command(minutes, allow_dev, tunnel), stdin=subprocess.DEVNULL,
+                                stdout=log, stderr=log, cwd=str(BASE), creationflags=flags,
+                                start_new_session=sys.platform != "win32")
+
+
+def stop_http() -> int:
+    n = 0
+    for inst in state.instances():
+        if inst.get("transport") == "http":
+            n += state.request_stop(int(inst["pid"]))
+    return n
+
+
 def audit_tail(path: Path, n: int = 8) -> list[dict[str, Any]]:
     try:
         with path.open("rb") as fh:
@@ -199,23 +219,13 @@ class RemoteDevUI:
             "Garder une durée courte. Continuer ?",
         ):
             return
-        HTTP_LOG.parent.mkdir(parents=True, exist_ok=True)
-        log = HTTP_LOG.open("a", encoding="utf-8")
-        log.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} démarrage ---\n")
-        log.flush()
-        flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
         self.last_error = ""
-        self.proc = subprocess.Popen(build_command(self.minutes.get(), self.allow_dev.get(), self.tunnel.get()),
-                         stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd=str(BASE),
-                         creationflags=flags, start_new_session=sys.platform != "win32")
-        log.close()
+        self.proc = launch_http(self.minutes.get(), self.allow_dev.get(), self.tunnel.get())
         self.launching_since = time.time()
         self.refresh(reschedule=False)
 
     def stop(self) -> None:
-        for inst in state.instances():
-            if inst.get("transport") == "http":
-                state.request_stop(int(inst["pid"]))
+        stop_http()
 
     def copy_url(self) -> None:
         if self.current_url:

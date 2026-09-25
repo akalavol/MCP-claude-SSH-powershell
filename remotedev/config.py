@@ -99,6 +99,9 @@ class HostConfig(_Strict):
                 raise ValueError(f"nom d'hôte invalide : {value!r}")
         if self.user is not None and not _NAME_RE.match(self.user.replace("\\", "")):
             raise ValueError(f"utilisateur invalide : {self.user!r}")
+        if self.key:
+            # "~/.ssh/claude_dev" doit marcher sur le mini PC comme sous Windows.
+            self.key = os.path.expanduser(self.key)
         if not self.allowed_paths:
             raise ValueError("allowed_paths ne peut pas être vide")
         self.allowed_paths = [self.normpath(p) for p in self.allowed_paths]

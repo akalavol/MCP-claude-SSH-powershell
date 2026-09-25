@@ -1,0 +1,24 @@
+# Unité systemd UTILISATEUR pour démarrer le mode HTTP d'une seule commande sur le mini PC
+# (par exemple depuis une appli SSH sur téléphone). Jamais activée au démarrage : pas de
+# section [Install], c'est voulu.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/remotedev-http.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user start remotedev-http      # démarre (arrêt automatique après 60 min)
+#   ~/mcp-remotedev/remotedev.sh status        # affiche l'URL à coller dans ChatGPT
+#   systemctl --user stop remotedev-http       # arrête tout de suite
+#
+# Adapter le chemin si le dépôt n'est pas dans ~/mcp-remotedev.
+
+[Unit]
+Description=RemoteDev - mode HTTP à la demande (Cloudflare Quick Tunnel)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mcp-remotedev
+ExecStart=%h/mcp-remotedev/remotedev.sh http --minutes 60
+Restart=no
+NoNewPrivileges=yes
+PrivateTmp=yes
