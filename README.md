@@ -50,6 +50,35 @@ claude mcp add remotedev -- C:\Projet\mcp-remotedev\.venv\Scripts\python.exe C:\
 }
 ```
 
+### Appli ChatGPT / claude.ai (mode HTTP à la demande)
+
+Ces applis n'acceptent que des serveurs MCP distants en HTTPS. RemoteDev peut s'exposer
+**temporairement** via un Cloudflare Quick Tunnel, sans compte ni port ouvert sur la box :
+
+```powershell
+winget install Cloudflare.cloudflared
+.\.venv\Scripts\python.exe server.py --http               # 60 min, lecture seule
+.\.venv\Scripts\python.exe server.py --http --minutes 20 --allow-dev
+```
+
+La console affiche une URL du type
+`https://xxx.trycloudflare.com/<secret>/mcp`. Dans ChatGPT : Paramètres → Applications
+(mode développeur) → Créer. Colle l'URL et choisis « aucune authentification ».
+
+- **L'URL est le mot de passe.** Elle contient un secret de 256 bits, régénéré à chaque
+  lancement ; tout autre chemin répond 404. Quiconque a l'URL complète a accès aux outils
+  tant que le serveur tourne. Relancer le serveur révoque l'ancienne URL.
+- Le mode SAFE (lecture seule) est forcé, sauf `--allow-dev`. Avec `--allow-dev`, Claude ou
+  ChatGPT peuvent écrire du code et l'exécuter sur tes machines depuis Internet : garde des
+  sessions courtes.
+- L'arrêt est automatique après `--minutes`. Le serveur n'écoute que sur 127.0.0.1.
+- Les réponses sont en JSON, sans SSE : les Quick Tunnels ne transmettent pas les flux SSE.
+- À chaque lancement, l'adresse change : il faut modifier l'URL du connecteur dans ChatGPT.
+- Les Quick Tunnels sont un service de test chez Cloudflare, sans garantie. Pour un usage
+  permanent, il faut un tunnel nommé et une vraie authentification OAuth, qui n'est pas
+  implémentée ici.
+- Le journal d'audit marque ces appels avec `"transport": "http"`.
+
 `REMOTEDEV_MODE` (`safe` | `dev`) surcharge `policies.yaml`. `REMOTEDEV_CONFIG_DIR` permet
 d'utiliser un autre dossier de configuration.
 
@@ -217,13 +246,18 @@ vérifie aussi un serveur MCP complet via stdio. Pour valider le transport SSH c
 REMOTEDEV_SSH_TEST="claude-dev@127.0.0.1:2222:/chemin/cle:/home/claude-dev/projects" pytest
 ```
 
+Le mode HTTP est testé en local (secret, 404, mode SAFE, analyse de la sortie de
+cloudflared avec un faux binaire). Le passage par un vrai tunnel trycloudflare n'a pas pu
+être testé.
+
 Testé avec `mcp` 1.30 et 2.2, Python 3.11, PowerShell 7.4. Non testé : cibles Windows
 réelles, WinRM réseau, Windows PowerShell 5.1.
 
 ## Structure
 
 ```
-server.py                      point d'entrée stdio
+server.py                      point d'entrée (stdio, ou --http)
+remotedev/http_remote.py       mode HTTP à la demande + Cloudflare Quick Tunnel
 remotedev/app.py               construction du serveur, filtrage par mode
 remotedev/runtime.py           exécution, préambules de scripts, audit, décorateur @tool
 remotedev/config.py            modèles pydantic de hosts.yaml / policies.yaml

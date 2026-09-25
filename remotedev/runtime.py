@@ -82,6 +82,7 @@ class Runtime:
     def __init__(self, config: Config):
         self.config = config
         self.policies = config.policies
+        self.transport = "stdio"
         self._audit_lock = threading.Lock()
 
     # ------------------------------------------------------------------ hôtes
@@ -204,6 +205,7 @@ def tool(level: str, *, read_only: bool = True, destructive: bool = False):
             entry: dict[str, Any] = {
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "tool": func.__name__,
+                "transport": _RUNTIME.transport if _RUNTIME else None,
                 "level": level,
                 "host": params.get("host"),
                 "params": audit_params({k: v for k, v in params.items() if k != "host"}),

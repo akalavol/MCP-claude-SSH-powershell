@@ -53,13 +53,13 @@ def validate_startup(config: Config) -> list[str]:
     return errors
 
 
-def build_server(config: Config | None = None):
+def build_server(config: Config | None = None, server_kwargs: dict | None = None):
     config = config or load_config()
     errors = validate_startup(config)
     if errors:
         raise SystemExit("configuration refusée :\n  - " + "\n  - ".join(errors))
     set_runtime(Runtime(config))
-    server = _Server("RemoteDev", instructions=INSTRUCTIONS)
+    server = _Server("RemoteDev", instructions=INSTRUCTIONS, **(server_kwargs or {}))
     enabled = config.mode_levels
     for spec in REGISTRY:
         if spec.level not in enabled:
@@ -75,8 +75,29 @@ def build_server(config: Config | None = None):
     return server
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="MCP RemoteDev")
+    parser.add_argument("--http", action="store_true",
+                        help="mode HTTP à la demande (ChatGPT, claude.ai) au lieu de stdio")
+    parser.add_argument("--no-tunnel", action="store_true", help="ne pas lancer cloudflared (HTTP local seul)")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--minutes", type=int, default=60, help="arrêt automatique (mode HTTP)")
+    parser.add_argument("--allow-dev", action="store_true",
+                        help="mode HTTP : garder le mode de policies.yaml au lieu de forcer SAFE")
+    args = parser.parse_args(argv)
     try:
+        if args.http:
+            import asyncio
+
+            from .http_remote import serve
+
+            try:
+                asyncio.run(serve(args.port, not args.no_tunnel, max(1, args.minutes), args.allow_dev))
+            except KeyboardInterrupt:
+                pass
+            return
         server = build_server()
     except (FileNotFoundError, ValueError) as exc:
         raise SystemExit(f"[remotedev] configuration invalide : {exc}")
