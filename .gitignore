@@ -4,4 +4,6 @@ __pycache__/
 .pytest_cache/
 logs/*.log
 config/hosts.yaml
+config/hosts.yaml.bak
+config/hosts.yaml.tmp
 logs/run/

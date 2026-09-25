@@ -208,9 +208,61 @@ def _read_yaml(path: Path) -> dict:
     return data
 
 
+def resolve_config_dir(config_dir: str | os.PathLike | None = None) -> Path:
+    base = Path(__file__).resolve().parent.parent
+    return Path(config_dir or os.environ.get("REMOTEDEV_CONFIG_DIR") or base / "config")
+
+
+# --- édition de hosts.yaml (utilisée par l'interface) ---------------------------------
+
+_HOSTS_HEADER = (
+    "# Géré par l'interface RemoteDev (bouton Ajouter / Modifier). Les commentaires ne sont pas conservés.\n"
+    "# Référence des champs : hosts.example.yaml\n\n"
+)
+
+
+def read_hosts_raw(config_dir: str | os.PathLike | None = None) -> dict[str, dict]:
+    """Contenu brut de hosts.yaml (vide si le fichier n'existe pas)."""
+    raw = _read_yaml(resolve_config_dir(config_dir) / "hosts.yaml").get("hosts") or {}
+    return {str(k): dict(v or {}) for k, v in raw.items()}
+
+
+def _write_hosts_raw(hosts: dict[str, dict], config_dir: str | os.PathLike | None) -> None:
+    path = resolve_config_dir(config_dir) / "hosts.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.with_name("hosts.yaml.bak").write_bytes(path.read_bytes())
+    body = yaml.safe_dump({"hosts": hosts}, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    tmp = path.with_name("hosts.yaml.tmp")
+    tmp.write_text(_HOSTS_HEADER + body, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def save_host(name: str, data: dict, old_name: str | None = None,
+              config_dir: str | os.PathLike | None = None) -> HostConfig:
+    """Valide puis enregistre une machine. `old_name` : renommage d'une entrée existante."""
+    if not _NAME_RE.match(name):
+        raise ValueError(f"nom de machine invalide : {name!r} (lettres, chiffres, . _ @ -)")
+    hc = HostConfig.model_validate({**data, "name": name})
+    hosts = read_hosts_raw(config_dir)
+    if name in hosts and name != old_name:
+        raise ValueError(f"une machine nommée {name!r} existe déjà")
+    if old_name and old_name != name:
+        hosts = {(name if k == old_name else k): v for k, v in hosts.items()}
+    hosts[name] = data
+    _write_hosts_raw(hosts, config_dir)
+    return hc
+
+
+def delete_host(name: str, config_dir: str | os.PathLike | None = None) -> None:
+    hosts = read_hosts_raw(config_dir)
+    if hosts.pop(name, None) is not None:
+        _write_hosts_raw(hosts, config_dir)
+
+
 def load_config(config_dir: str | os.PathLike | None = None) -> Config:
     base = Path(__file__).resolve().parent.parent
-    cdir = Path(config_dir or os.environ.get("REMOTEDEV_CONFIG_DIR") or base / "config")
+    cdir = resolve_config_dir(config_dir)
     hosts_file = cdir / "hosts.yaml"
     if not hosts_file.exists():
         raise FileNotFoundError(

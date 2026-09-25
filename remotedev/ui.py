@@ -98,6 +98,51 @@ def format_audit(entry: dict[str, Any]) -> str:
     return f"{ts}  {mark:<6} {entry.get('tool', '?'):<18} {entry.get('host') or '-':<16}{via}"
 
 
+def form_to_host(form: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Champs du formulaire -> entrée de hosts.yaml. Les champs non gérés par le formulaire
+    (projects, docker, services, log_sources...) d'une entrée existante sont conservés."""
+    data = dict(existing or {})
+    for key in ("host", "user", "port", "key", "ssh_alias", "winrm"):
+        data.pop(key, None)
+    backend = form["backend"]
+    data["os"] = form["os"]
+    data["backend"] = backend
+    if backend in ("ssh", "winrm"):
+        for key in ("host", "user", "key", "ssh_alias"):
+            value = str(form.get(key) or "").strip()
+            if value and not (backend == "winrm" and key in ("key", "ssh_alias")):
+                data[key] = value.replace("\\", "/") if key == "key" else value
+        port = str(form.get("port") or "").strip()
+        if port:
+            if not port.isdigit():
+                raise ValueError(f"port invalide : {port!r}")
+            data["port"] = int(port)
+        if backend == "winrm" and form.get("use_ssl"):
+            data["winrm"] = {"use_ssl": True}
+    perms = ["read"] + (["dev"] if form.get("dev") else [])
+    data["permissions"] = perms
+    paths = [p.strip().replace("\\", "/") for p in str(form.get("allowed_paths") or "").splitlines() if p.strip()]
+    if not paths:
+        raise ValueError("indiquer au moins un dossier autorisé")
+    data["allowed_paths"] = paths
+    # ordre lisible dans le YAML
+    order = ["os", "backend", "host", "port", "user", "key", "ssh_alias", "permissions", "allowed_paths"]
+    return {k: data[k] for k in order if k in data} | {k: v for k, v in data.items() if k not in order}
+
+
+def host_to_form(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "os": raw.get("os", "linux"),
+        "backend": "winrm" if raw.get("backend") == "powershell" else raw.get("backend", "ssh"),
+        "host": raw.get("host", ""), "user": raw.get("user", ""),
+        "port": str(raw.get("port") or ""), "key": raw.get("key", ""),
+        "ssh_alias": raw.get("ssh_alias", ""),
+        "use_ssl": bool((raw.get("winrm") or {}).get("use_ssl")),
+        "dev": "dev" in (raw.get("permissions") or []),
+        "allowed_paths": "\n".join(raw.get("allowed_paths") or []),
+    }
+
+
 def http_log_tail(n: int = 4) -> str:
     try:
         lines = HTTP_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -178,8 +223,14 @@ class RemoteDevUI:
             self.tree.heading(col, text=label)
             self.tree.column(col, width=width, stretch=col == "detail")
         self.tree.pack(fill="both", expand=True)
-        self.check_btn = ttk.Button(hosts_box, text="Tester les connexions", command=self.check_hosts)
-        self.check_btn.pack(anchor="e", pady=(6, 0))
+        self.tree.bind("<Double-1>", lambda _e: self.edit_host())
+        hosts_btns = ttk.Frame(hosts_box)
+        hosts_btns.pack(fill="x", pady=(6, 0))
+        ttk.Button(hosts_btns, text="Ajouter…", command=self.add_host).pack(side="left")
+        ttk.Button(hosts_btns, text="Modifier…", command=self.edit_host).pack(side="left", padx=4)
+        ttk.Button(hosts_btns, text="Supprimer", command=self.remove_host).pack(side="left")
+        self.check_btn = ttk.Button(hosts_btns, text="Tester les connexions", command=self.check_hosts)
+        self.check_btn.pack(side="right")
 
         # Activité
         act_box = ttk.LabelFrame(root, text="Dernières actions (audit)", padding=8)
@@ -200,6 +251,8 @@ class RemoteDevUI:
             return BASE / "logs" / "audit.log"
 
     def _load_hosts(self) -> None:
+        self.tree.delete(*self.tree.get_children())
+        self.check_btn.state(["!disabled"])
         try:
             from .config import load_config
 
@@ -208,8 +261,45 @@ class RemoteDevUI:
             self.tree.insert("", "end", text="configuration", values=("KO", "", str(exc)[:200]))
             self.check_btn.state(["disabled"])
             return
+        if not config.hosts:
+            self.tree.insert("", "end", text="(aucune)", values=("", "", "cliquer sur « Ajouter… »"))
+            self.check_btn.state(["disabled"])
         for name, h in sorted(config.hosts.items()):
-            self.tree.insert("", "end", iid=name, text=name, values=("?", "", f"{h.os}/{h.backend}"))
+            target = h.ssh_alias or h.host or "ce PC"
+            self.tree.insert("", "end", iid=name, text=name, values=("?", "", f"{h.os}/{h.backend} — {target}"))
+
+    # -- gestion des machines
+    def _selected_host(self) -> str | None:
+        from .config import read_hosts_raw
+
+        sel = self.tree.selection()
+        if sel and sel[0] in read_hosts_raw():
+            return sel[0]
+        self.messagebox.showinfo("Machines", "Sélectionner d'abord une machine dans la liste.")
+        return None
+
+    def add_host(self) -> None:
+        HostDialog(self, None)
+
+    def edit_host(self) -> None:
+        name = self._selected_host()
+        if name:
+            HostDialog(self, name)
+
+    def remove_host(self) -> None:
+        from .config import delete_host
+
+        name = self._selected_host()
+        if name and self.messagebox.askyesno("Supprimer", f"Retirer la machine « {name} » de hosts.yaml ?"):
+            delete_host(name)
+            self.hosts_changed()
+
+    def hosts_changed(self) -> None:
+        self._load_hosts()
+        if state.instances():
+            self.messagebox.showinfo(
+                "Machines", "Enregistré. Les serveurs déjà lancés (HTTP ou Claude) doivent être "
+                            "redémarrés pour voir la nouvelle liste.")
 
     # -- actions
     def start(self) -> None:
@@ -315,3 +405,184 @@ class RemoteDevUI:
 
         if reschedule:
             self.root.after(REFRESH_MS, self.refresh)
+
+
+class HostDialog:
+    """Fenêtre « Ajouter / Modifier une machine » : écrit config/hosts.yaml."""
+
+    def __init__(self, ui: RemoteDevUI, name: str | None):
+        from .config import read_hosts_raw
+
+        self.ui, self.old_name = ui, name
+        tk, ttk = ui.tk, ui.ttk
+        self.existing = read_hosts_raw().get(name, {}) if name else {}
+        form = host_to_form(self.existing) if name else host_to_form({"os": "linux", "backend": "ssh"})
+
+        self.win = win = tk.Toplevel(ui.root)
+        win.title(f"Modifier « {name} »" if name else "Ajouter une machine")
+        win.transient(ui.root)
+        win.resizable(True, False)
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+        frm.columnconfigure(1, weight=1)
+
+        self.vars: dict[str, Any] = {
+            "name": tk.StringVar(value=name or ""),
+            "os": tk.StringVar(value=form["os"]),
+            "backend": tk.StringVar(value=form["backend"]),
+            "host": tk.StringVar(value=form["host"]),
+            "user": tk.StringVar(value=form["user"]),
+            "port": tk.StringVar(value=form["port"]),
+            "key": tk.StringVar(value=form["key"]),
+            "ssh_alias": tk.StringVar(value=form["ssh_alias"]),
+            "use_ssl": tk.BooleanVar(value=form["use_ssl"]),
+            "dev": tk.BooleanVar(value=form["dev"]),
+        }
+        self.widgets: dict[str, Any] = {}
+        row = 0
+
+        def line(label: str, widget, key: str | None = None, hint: str = "") -> None:
+            nonlocal row
+            lbl = ttk.Label(frm, text=label)
+            lbl.grid(row=row, column=0, sticky="w", pady=3)
+            widget.grid(row=row, column=1, sticky="we", pady=3)
+            parts = [lbl, widget]
+            if hint:
+                h = ttk.Label(frm, text=hint, foreground="#777")
+                h.grid(row=row, column=2, sticky="w", padx=6)
+                parts.append(h)
+            if key:
+                self.widgets[key] = parts
+            row += 1
+
+        line("Nom", ttk.Entry(frm, textvariable=self.vars["name"]), hint="ex. serveur-maison")
+        line("Système", ttk.Combobox(frm, textvariable=self.vars["os"], values=("linux", "windows"), state="readonly"))
+        line("Connexion", ttk.Combobox(frm, textvariable=self.vars["backend"], values=("ssh", "winrm", "local"),
+                                       state="readonly"), hint="local = ce PC")
+        line("Hôte (IP ou nom)", ttk.Entry(frm, textvariable=self.vars["host"]), "host", "ex. 192.168.1.20")
+        line("Utilisateur", ttk.Entry(frm, textvariable=self.vars["user"]), "user")
+        line("Port", ttk.Entry(frm, textvariable=self.vars["port"], width=8), "port", "vide = défaut")
+        key_row = ttk.Frame(frm)
+        ttk.Entry(key_row, textvariable=self.vars["key"]).pack(side="left", fill="x", expand=True)
+        ttk.Button(key_row, text="…", width=3, command=self._browse_key).pack(side="left", padx=(4, 0))
+        line("Clé SSH privée", key_row, "key", "fichier sans .pub")
+        line("ou alias ~/.ssh/config", ttk.Entry(frm, textvariable=self.vars["ssh_alias"]), "ssh_alias",
+             "remplace hôte/utilisateur/clé")
+        line("", ttk.Checkbutton(frm, text="HTTPS (WinRM sur 5986)", variable=self.vars["use_ssl"]), "use_ssl")
+        line("Droits", ttk.Checkbutton(frm, text="Autoriser l'écriture et les commandes (dev)",
+                                       variable=self.vars["dev"]), hint="lecture toujours permise")
+
+        ttk.Label(frm, text="Dossiers autorisés\n(un par ligne)").grid(row=row, column=0, sticky="nw", pady=3)
+        self.paths = tk.Text(frm, height=4, width=46, font=("Consolas", 9))
+        self.paths.insert("1.0", form["allowed_paths"])
+        self.paths.grid(row=row, column=1, columnspan=2, sticky="we", pady=3)
+        row += 1
+        ttk.Label(frm, text="Claude ne pourra rien lire ni écrire en dehors de ces dossiers.",
+                  foreground="#777").grid(row=row, column=1, columnspan=2, sticky="w")
+        row += 1
+
+        self.status = ttk.Label(frm, text="", wraplength=460)
+        self.status.grid(row=row, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        row += 1
+        btns = ttk.Frame(frm)
+        btns.grid(row=row, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        self.test_btn = ttk.Button(btns, text="Tester la connexion", command=self._test)
+        self.test_btn.pack(side="left")
+        ttk.Button(btns, text="Annuler", command=win.destroy).pack(side="left", padx=6)
+        ttk.Button(btns, text="Enregistrer", command=self._save).pack(side="left")
+
+        self.vars["backend"].trace_add("write", lambda *_: self._toggle())
+        self._toggle()
+        win.grab_set()
+
+    # -- helpers
+    def _form(self) -> dict[str, Any]:
+        f = {k: v.get() for k, v in self.vars.items()}
+        f["allowed_paths"] = self.paths.get("1.0", "end")
+        return f
+
+    def _build(self) -> tuple[str, dict[str, Any]]:
+        from .config import HostConfig
+
+        f = self._form()
+        name = f["name"].strip()
+        if not name:
+            raise ValueError("donner un nom à la machine")
+        data = form_to_host(f, self.existing)
+        HostConfig.model_validate({**data, "name": name})  # erreur affichée avant d'écrire
+        return name, data
+
+    def _toggle(self) -> None:
+        visible = {"ssh": {"host", "user", "port", "key", "ssh_alias"},
+                   "winrm": {"host", "user", "port", "use_ssl"}, "local": set()}[self.vars["backend"].get()]
+        for key, parts in self.widgets.items():
+            for w in parts:
+                if key in visible:
+                    w.grid()
+                else:
+                    w.grid_remove()
+
+    def _browse_key(self) -> None:
+        from tkinter import filedialog
+
+        path = filedialog.askopenfilename(parent=self.win, title="Clé SSH privée",
+                                          initialdir=str(Path.home() / ".ssh"))
+        if path:
+            self.vars["key"].set(path)
+
+    def _error(self, exc: Exception) -> None:
+        msg = str(exc)
+        if "validation error" in msg:  # pydantic : garder les lignes utiles
+            msg = "\n".join(s.split(" [type=")[0].strip().removeprefix("Value error, ")
+                            for s in msg.splitlines()[1:] if s.strip() and "further information" not in s)
+        self.status.configure(text=msg, foreground="#c62828")
+
+    # -- actions
+    def _test(self) -> None:
+        from .config import HostConfig
+        from .health import check_host
+
+        try:
+            name, data = self._build()
+        except Exception as exc:
+            self._error(exc)
+            return
+        self.status.configure(text="Test en cours…", foreground="#555")
+        self.test_btn.state(["disabled"])
+        result: queue.Queue = queue.Queue()
+
+        def worker() -> None:
+            try:
+                result.put(asyncio.run(check_host(HostConfig.model_validate({**data, "name": name}))))
+            except Exception as exc:
+                result.put(exc)
+
+        def poll() -> None:
+            if not self.win.winfo_exists():
+                return
+            if result.empty():
+                self.win.after(200, poll)
+                return
+            res = result.get()
+            self.test_btn.state(["!disabled"])
+            if isinstance(res, Exception):
+                self._error(res)
+            elif res.ok:
+                self.status.configure(text=f"Connexion OK : {res.detail} ({res.seconds:.1f}s)", foreground="#2e7d32")
+            else:
+                self.status.configure(text=f"Échec : {res.detail}", foreground="#c62828")
+
+        threading.Thread(target=worker, daemon=True).start()
+        poll()
+
+    def _save(self) -> None:
+        from .config import save_host
+
+        try:
+            name, data = self._build()
+            save_host(name, data, old_name=self.old_name)
+        except Exception as exc:
+            self._error(exc)
+            return
+        self.win.destroy()
+        self.ui.hosts_changed()

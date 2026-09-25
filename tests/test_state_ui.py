@@ -57,6 +57,34 @@ def test_ui_helpers(tmp_path):
     assert "OK" in ui.format_audit(tail[0]) and "09:00:04" in ui.format_audit(tail[0])
 
 
+def test_host_form_and_save(tmp_path):
+    from remotedev.config import delete_host, load_config, read_hosts_raw, save_host
+
+    cdir = tmp_path / "cfg"
+    form = {"os": "linux", "backend": "ssh", "host": "192.168.1.20", "user": "claude-dev", "port": "2222",
+            "key": r"C:\Users\me\.ssh\claude_dev", "ssh_alias": "", "use_ssl": False, "dev": True,
+            "allowed_paths": "/home/claude-dev/projects/a\n\n  /home/claude-dev/projects/b \n"}
+    data = ui.form_to_host(form)
+    assert data["port"] == 2222 and data["key"] == "C:/Users/me/.ssh/claude_dev"
+    assert data["permissions"] == ["read", "dev"] and len(data["allowed_paths"]) == 2
+    save_host("srv", data, config_dir=cdir)
+    assert load_config(cdir).hosts["srv"].host == "192.168.1.20"
+
+    # modification + renommage : les champs hors formulaire sont conservés
+    raw = {**read_hosts_raw(cdir)["srv"], "docker": {"enabled": True}}
+    local = ui.form_to_host({**ui.host_to_form(raw), "backend": "local", "dev": False}, raw)
+    assert "host" not in local and local["docker"] == {"enabled": True} and local["permissions"] == ["read"]
+    save_host("srv2", local, old_name="srv", config_dir=cdir)
+    assert list(read_hosts_raw(cdir)) == ["srv2"] and (cdir / "hosts.yaml.bak").exists()
+
+    with pytest.raises(ValueError):
+        save_host("bad", {**data, "allowed_paths": ["/"]}, config_dir=cdir)
+    with pytest.raises(ValueError):
+        ui.form_to_host({**form, "allowed_paths": "  "})
+    delete_host("srv2", config_dir=cdir)
+    assert load_config(cdir).hosts == {}
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

@@ -20,8 +20,9 @@ type nul > "%ROOT%.venv\.remotedev-ok"
 set "CFG=%REMOTEDEV_CONFIG_DIR%"
 if "%CFG%"=="" set "CFG=%ROOT%config"
 if exist "%CFG%\hosts.yaml" goto :config_ok
-echo [remotedev] %CFG%\hosts.yaml manquant : copier config\hosts.example.yaml puis l'adapter.
-goto :fail
+rem Premier lancement : liste vide, les machines s'ajoutent depuis l'interface (bouton Ajouter).
+echo [remotedev] %CFG%\hosts.yaml cree (vide) : ajouter les machines dans l'interface.
+> "%CFG%\hosts.yaml" echo hosts: {}
 :config_ok
 
 set "ACTION=%~1"
