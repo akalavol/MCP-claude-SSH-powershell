@@ -98,26 +98,59 @@ def format_audit(entry: dict[str, Any]) -> str:
     return f"{ts}  {mark:<6} {entry.get('tool', '?'):<18} {entry.get('host') or '-':<16}{via}"
 
 
-BACKEND_LABELS = {
-    "ssh": "SSH (Linux, ou Windows avec OpenSSH)",
-    "winrm": "PowerShell Remoting (WinRM)",
+# Type de connexion affiché -> (backend, os, PowerShell distant)
+CONNECTION_TYPES: dict[str, tuple[str, str, str | None]] = {
+    "ssh-linux": ("ssh", "linux", None),
+    "ssh-pwsh": ("ssh", "windows", "pwsh"),
+    "ssh-ps51": ("ssh", "windows", "powershell"),
+    "winrm": ("winrm", "windows", None),
+    "local": ("local", "windows" if sys.platform == "win32" else "linux", None),
+}
+CONNECTION_LABELS = {
+    "ssh-linux": "SSH → Linux (shell)",
+    "ssh-pwsh": "SSH → Windows (PowerShell 7)",
+    "ssh-ps51": "SSH → Windows (Windows PowerShell 5.1)",
+    "winrm": "PowerShell Remoting (WinRM) → Windows",
     "local": "Ce PC (local)",
 }
+PASSWORD_LABEL = "Identifiant + mot de passe"
+AUTH_DEFAULT_LABELS = {"ssh": "Clé SSH", "winrm": "Compte Windows actuel"}
+
+
+def connection_kind(raw: dict[str, Any]) -> str:
+    backend = "winrm" if raw.get("backend") == "powershell" else raw.get("backend", "ssh")
+    if backend in ("winrm", "local"):
+        return backend
+    if raw.get("os") != "windows":
+        return "ssh-linux"
+    return "ssh-ps51" if raw.get("ps_exe") == "powershell" else "ssh-pwsh"
 
 
 def form_to_host(form: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Champs du formulaire -> entrée de hosts.yaml. Les champs non gérés par le formulaire
     (projects, docker, services, log_sources...) d'une entrée existante sont conservés."""
     data = dict(existing or {})
-    for key in ("host", "user", "port", "key", "ssh_alias", "winrm"):
+    for key in ("os", "backend", "host", "user", "port", "key", "ssh_alias", "winrm", "auth", "ps_exe"):
         data.pop(key, None)
-    backend = form["backend"]
-    data["os"] = form["os"]
+    backend, os_name, ps_exe = CONNECTION_TYPES[form["kind"]]
+    if backend == "local" and existing and existing.get("backend") == "local":
+        os_name = existing.get("os", os_name)
+    elif data.get("shell") and os_name == "windows":
+        data.pop("shell")  # le shell d'un hôte windows est forcément powershell
+    password = backend != "local" and form.get("auth") == "password"
+    data["os"] = os_name
     data["backend"] = backend
+    if ps_exe == "powershell":
+        data["ps_exe"] = ps_exe
+    if password:
+        data["auth"] = "password"
     if backend in ("ssh", "winrm"):
+        skip = {"key", "ssh_alias"} if backend == "winrm" or password else set()
+        if backend == "winrm" and not password:
+            skip.add("user")  # compte Windows courant
         for key in ("host", "user", "key", "ssh_alias"):
             value = str(form.get(key) or "").strip()
-            if value and not (backend == "winrm" and key in ("user", "key", "ssh_alias")):
+            if value and key not in skip:
                 data[key] = value.replace("\\", "/") if key == "key" else value
         port = str(form.get("port") or "").strip()
         if port:
@@ -125,7 +158,6 @@ def form_to_host(form: dict[str, Any], existing: dict[str, Any] | None = None) -
                 raise ValueError(f"port invalide : {port!r}")
             data["port"] = int(port)
         if backend == "winrm":
-            data["os"] = "windows"
             winrm = dict((existing or {}).get("winrm") or {})
             winrm.pop("use_ssl", None)
             winrm.pop("port", None)
@@ -142,17 +174,18 @@ def form_to_host(form: dict[str, Any], existing: dict[str, Any] | None = None) -
         raise ValueError("indiquer au moins un dossier autorisé")
     data["allowed_paths"] = paths
     # ordre lisible dans le YAML
-    order = ["os", "backend", "host", "port", "user", "key", "ssh_alias", "permissions", "allowed_paths"]
+    order = ["os", "backend", "ps_exe", "host", "port", "user", "auth", "key", "ssh_alias", "permissions",
+             "allowed_paths"]
     return {k: data[k] for k in order if k in data} | {k: v for k, v in data.items() if k not in order}
 
 
 def host_to_form(raw: dict[str, Any]) -> dict[str, Any]:
     return {
-        "os": raw.get("os", "linux"),
-        "backend": "winrm" if raw.get("backend") == "powershell" else raw.get("backend", "ssh"),
+        "kind": connection_kind(raw),
         "host": raw.get("host", ""), "user": raw.get("user", ""),
         "port": str(raw.get("port") or (raw.get("winrm") or {}).get("port") or ""), "key": raw.get("key", ""),
         "ssh_alias": raw.get("ssh_alias", ""),
+        "auth": raw.get("auth", "default"),
         "use_ssl": bool((raw.get("winrm") or {}).get("use_ssl")),
         "dev": "dev" in (raw.get("permissions") or []),
         "allowed_paths": "\n".join(raw.get("allowed_paths") or []),
@@ -424,14 +457,16 @@ class RemoteDevUI:
 
 
 class HostDialog:
-    """Fenêtre « Ajouter / Modifier une machine » : écrit config/hosts.yaml."""
+    """Fenêtre « Ajouter / Modifier une machine » : écrit config/hosts.yaml (+ credentials.dat)."""
 
     def __init__(self, ui: RemoteDevUI, name: str | None):
+        from . import credentials
         from .config import read_hosts_raw
 
         self.ui, self.old_name = ui, name
         tk, ttk = ui.tk, ui.ttk
         self.existing = read_hosts_raw().get(name, {}) if name else {}
+        self.has_saved_password = bool(name) and credentials.has_password(name)
         form = host_to_form(self.existing) if name else host_to_form({"os": "linux", "backend": "ssh"})
 
         self.win = win = tk.Toplevel(ui.root)
@@ -444,17 +479,19 @@ class HostDialog:
 
         self.vars: dict[str, Any] = {
             "name": tk.StringVar(value=name or ""),
-            "os": tk.StringVar(value=form["os"]),
-            "backend": tk.StringVar(value=BACKEND_LABELS[form["backend"]]),
+            "kind": tk.StringVar(value=CONNECTION_LABELS[form["kind"]]),
+            "auth": tk.StringVar(),
             "host": tk.StringVar(value=form["host"]),
             "user": tk.StringVar(value=form["user"]),
+            "password": tk.StringVar(),
             "port": tk.StringVar(value=form["port"]),
             "key": tk.StringVar(value=form["key"]),
             "ssh_alias": tk.StringVar(value=form["ssh_alias"]),
             "use_ssl": tk.BooleanVar(value=form["use_ssl"]),
             "dev": tk.BooleanVar(value=form["dev"]),
         }
-        self.widgets: dict[str, Any] = {}
+        self._initial_auth = form["auth"]
+        self.widgets: dict[str, list] = {}
         row = 0
 
         def line(label: str, widget, key: str | None = None, hint: str = "") -> None:
@@ -472,22 +509,25 @@ class HostDialog:
             row += 1
 
         line("Nom", ttk.Entry(frm, textvariable=self.vars["name"]), hint="ex. serveur-maison")
-        line("Système", ttk.Combobox(frm, textvariable=self.vars["os"], values=("linux", "windows"), state="readonly"))
-        line("Connexion", ttk.Combobox(frm, textvariable=self.vars["backend"], values=tuple(BACKEND_LABELS.values()),
-                                       state="readonly", width=38))
+        line("Type de connexion", ttk.Combobox(frm, textvariable=self.vars["kind"], state="readonly", width=40,
+                                               values=tuple(CONNECTION_LABELS.values())))
         line("Hôte (IP ou nom)", ttk.Entry(frm, textvariable=self.vars["host"]), "host", "ex. 192.168.1.20")
-        line("Utilisateur", ttk.Entry(frm, textvariable=self.vars["user"]), "user")
         line("Port", ttk.Entry(frm, textvariable=self.vars["port"], width=8), "port", "vide = défaut")
+        self.auth_box = ttk.Combobox(frm, textvariable=self.vars["auth"], state="readonly")
+        line("Authentification", self.auth_box, "auth")
+        line("Identifiant (login)", ttk.Entry(frm, textvariable=self.vars["user"]), "user")
+        line("Mot de passe", ttk.Entry(frm, textvariable=self.vars["password"], show="•"), "password",
+             "enregistré — vide = inchangé" if self.has_saved_password else "chiffré (compte Windows)")
         key_row = ttk.Frame(frm)
         ttk.Entry(key_row, textvariable=self.vars["key"]).pack(side="left", fill="x", expand=True)
         ttk.Button(key_row, text="…", width=3, command=self._browse_key).pack(side="left", padx=(4, 0))
         line("Clé SSH privée", key_row, "key", "fichier sans .pub")
         line("ou alias ~/.ssh/config", ttk.Entry(frm, textvariable=self.vars["ssh_alias"]), "ssh_alias",
-             "remplace hôte/utilisateur/clé")
+             "remplace hôte/login/clé")
         line("", ttk.Checkbutton(frm, text="HTTPS (WinRM sur 5986)", variable=self.vars["use_ssl"]), "use_ssl")
-        line("", ttk.Label(frm, foreground="#777", wraplength=360, text=(
-            "Connexion avec ton compte Windows actuel (pas de mot de passe stocké). Hors domaine, la machine "
-            "doit être dans TrustedHosts ; « Tester la connexion » le vérifie.")), "winrm_note")
+        line("", ttk.Label(frm, foreground="#777", wraplength=380, text=(
+            "Hors domaine Active Directory, la machine doit être dans les TrustedHosts de ce PC "
+            "(ou utiliser HTTPS) ; « Tester la connexion » le vérifie.")), "winrm_note")
         line("Droits", ttk.Checkbutton(frm, text="Autoriser l'écriture et les commandes (dev)",
                                        variable=self.vars["dev"]), hint="lecture toujours permise")
 
@@ -500,7 +540,7 @@ class HostDialog:
                   foreground="#777").grid(row=row, column=1, columnspan=2, sticky="w")
         row += 1
 
-        self.status = ttk.Label(frm, text="", wraplength=460)
+        self.status = ttk.Label(frm, text="", wraplength=480)
         self.status.grid(row=row, column=0, columnspan=3, sticky="we", pady=(8, 0))
         row += 1
         btns = ttk.Frame(frm)
@@ -510,14 +550,23 @@ class HostDialog:
         ttk.Button(btns, text="Annuler", command=win.destroy).pack(side="left", padx=6)
         ttk.Button(btns, text="Enregistrer", command=self._save).pack(side="left")
 
-        self.vars["backend"].trace_add("write", lambda *_: self._toggle())
+        self.vars["kind"].trace_add("write", lambda *_: self._toggle())
+        self.vars["auth"].trace_add("write", lambda *_: self._toggle())
         self._toggle()
         win.grab_set()
 
     # -- helpers
+    def _kind(self) -> str:
+        label = self.vars["kind"].get()
+        return next((k for k, v in CONNECTION_LABELS.items() if v == label), label)
+
+    def _password_mode(self) -> bool:
+        return self.vars["auth"].get() == PASSWORD_LABEL
+
     def _form(self) -> dict[str, Any]:
         f = {k: v.get() for k, v in self.vars.items()}
-        f["backend"] = self._backend()
+        f["kind"] = self._kind()
+        f["auth"] = "password" if self._password_mode() else "default"
         f["allowed_paths"] = self.paths.get("1.0", "end")
         return f
 
@@ -530,18 +579,25 @@ class HostDialog:
             raise ValueError("donner un nom à la machine")
         data = form_to_host(f, self.existing)
         HostConfig.model_validate({**data, "name": name})  # erreur affichée avant d'écrire
+        if data.get("auth") == "password" and not f["password"] and not (
+                self.has_saved_password and name == self.old_name):
+            raise ValueError("saisir le mot de passe")
         return name, data
 
-    def _backend(self) -> str:
-        label = self.vars["backend"].get()
-        return next((k for k, v in BACKEND_LABELS.items() if v == label), label)
-
     def _toggle(self) -> None:
-        backend = self._backend()
-        if backend == "winrm":  # PowerShell Remoting ne cible que Windows
-            self.vars["os"].set("windows")
-        visible = {"ssh": {"host", "user", "port", "key", "ssh_alias"},
-                   "winrm": {"host", "port", "use_ssl", "winrm_note"}, "local": set()}[backend]
+        backend = CONNECTION_TYPES[self._kind()][0]
+        if backend in AUTH_DEFAULT_LABELS:
+            choices = (AUTH_DEFAULT_LABELS[backend], PASSWORD_LABEL)
+            self.auth_box.configure(values=choices)
+            if self.vars["auth"].get() not in choices:
+                self.vars["auth"].set(PASSWORD_LABEL if self._initial_auth == "password" else choices[0])
+                return  # le trace sur auth rappelle _toggle
+        password = self._password_mode()
+        visible = {
+            "ssh": {"host", "port", "auth", "user"} | ({"password"} if password else {"key", "ssh_alias"}),
+            "winrm": {"host", "port", "auth", "use_ssl", "winrm_note"} | ({"user", "password"} if password else set()),
+            "local": set(),
+        }[backend]
         for key, parts in self.widgets.items():
             for w in parts:
                 if key in visible:
@@ -566,11 +622,23 @@ class HostDialog:
 
     # -- actions
     def _test(self) -> None:
-        from .config import HostConfig
+        import tempfile
+
+        from . import credentials
+        from .config import HostConfig, resolve_config_dir
         from .health import check_host
 
         try:
             name, data = self._build()
+            host = HostConfig.model_validate({**data, "name": name})
+            if host.auth == "password":
+                typed = self.vars["password"].get()
+                if typed:  # mot de passe pas encore enregistré : dossier temporaire
+                    tmp = tempfile.mkdtemp(prefix="remotedev-test-")
+                    credentials.set_password(name, typed, tmp)
+                    host._config_dir = Path(tmp)
+                else:
+                    host._config_dir = resolve_config_dir()
         except Exception as exc:
             self._error(exc)
             return
@@ -580,9 +648,14 @@ class HostDialog:
 
         def worker() -> None:
             try:
-                result.put(asyncio.run(check_host(HostConfig.model_validate({**data, "name": name}))))
+                result.put(asyncio.run(check_host(host)))
             except Exception as exc:
                 result.put(exc)
+            finally:
+                if host.auth == "password" and self.vars["password"].get():
+                    import shutil
+
+                    shutil.rmtree(host._config_dir, ignore_errors=True)
 
         def poll() -> None:
             if not self.win.winfo_exists():
@@ -597,19 +670,40 @@ class HostDialog:
             elif res.ok:
                 self.status.configure(text=f"Connexion OK : {res.detail} ({res.seconds:.1f}s)", foreground="#2e7d32")
             else:
-                self.status.configure(text=f"Échec : {res.detail}", foreground="#c62828")
+                self.status.configure(text=f"Échec : {res.detail}{connection_hint(res.detail)}", foreground="#c62828")
 
         threading.Thread(target=worker, daemon=True).start()
         poll()
 
     def _save(self) -> None:
+        from . import credentials
         from .config import save_host
 
         try:
             name, data = self._build()
             save_host(name, data, old_name=self.old_name)
+            if data.get("auth") == "password" and self.vars["password"].get():
+                credentials.set_password(name, self.vars["password"].get())
         except Exception as exc:
             self._error(exc)
             return
         self.win.destroy()
         self.ui.hosts_changed()
+
+
+def connection_hint(detail: str) -> str:
+    """Conseil pour les erreurs de connexion les plus fréquentes."""
+    d = detail.lower()
+    if "host key verification failed" in d:
+        return ("\nEmpreinte du serveur inconnue : lancer une fois « ssh login@hôte » dans un terminal "
+                "et répondre « yes », puis retester.")
+    if "permission denied" in d:
+        return "\nIdentifiant, mot de passe ou clé refusé par le serveur."
+    if "trustedhosts" in d:
+        return ("\nAjouter la machine aux TrustedHosts (PowerShell administrateur) : "
+                "Set-Item WSMan:\\localhost\\Client\\TrustedHosts -Value <hôte> -Concatenate")
+    if "'pwsh' is not recognized" in d or "pwsh: not found" in d or "pwsh : " in d:
+        return "\nPowerShell 7 absent sur la cible : choisir « SSH → Windows (Windows PowerShell 5.1) »."
+    return ""
+
+

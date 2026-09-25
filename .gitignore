@@ -6,4 +6,6 @@ logs/*.log
 config/hosts.yaml
 config/hosts.yaml.bak
 config/hosts.yaml.tmp
+config/credentials.dat
+config/credentials.dat.tmp
 logs/run/

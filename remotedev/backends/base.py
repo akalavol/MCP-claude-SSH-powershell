@@ -56,7 +56,8 @@ def ps_stdin(script: str, data: bytes | None) -> bytes:
     return b"\n".join(lines) + b"\n"
 
 
-async def run_process(argv: list[str], stdin: bytes | None, timeout: int) -> ExecResult:
+async def run_process(argv: list[str], stdin: bytes | None, timeout: int,
+                      env: dict[str, str] | None = None) -> ExecResult:
     """Lance un processus local. stdin n'hérite JAMAIS du flux stdio MCP."""
     start = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
@@ -64,6 +65,7 @@ async def run_process(argv: list[str], stdin: bytes | None, timeout: int) -> Exe
         stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(stdin), timeout=timeout)

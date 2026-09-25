@@ -5,15 +5,16 @@ Le script distant est transporté en base64 (jamais interpolé dans du code), le
 données via -ArgumentList. Sortie, erreurs et code retour reviennent dans un objet,
 car Invoke-Command ne propage pas les codes de sortie.
 
-Limites : sans domaine AD, WinRM exige TrustedHosts/HTTPS et des identifiants
-non interactifs, ce que ce backend ne gère pas. Préférer PowerShell 7 over SSH
-(backend: ssh + os: windows).
+Identifiants : compte Windows courant (auth: default) ou `user` + mot de passe
+enregistré via l'interface (auth: password, chiffré DPAPI). Sans domaine AD, la
+cible doit en plus être dans TrustedHosts, ou joignable en HTTPS (use_ssl).
 """
 
 from __future__ import annotations
 
 import base64
 
+from .. import credentials
 from ..config import HostConfig
 from .base import PWSH_ARGS, Backend, ExecResult, ps_stdin, run_process
 from .base import local_pwsh as default_pwsh
@@ -40,7 +41,22 @@ class WinRMBackend(Backend):
             params.append(f"Authentication = {_ps_literal(h.winrm.authentication)}")
         if h.winrm.configuration_name:
             params.append(f"ConfigurationName = {_ps_literal(h.winrm.configuration_name)}")
+        cred: list[str] = []
+        if h.auth == "password":
+            # Le mot de passe reste chiffré (DPAPI) jusque dans ce processus PowerShell.
+            blob = base64.b64encode(h.password_blob()).decode("ascii")
+            entropy = base64.b64encode(credentials._ENTROPY).decode("ascii")
+            cred = [
+                "try { Add-Type -AssemblyName System.Security -ErrorAction Stop } catch { }",
+                f"$__pw = [Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String('{blob}'), "
+                f"[Convert]::FromBase64String('{entropy}'), 'CurrentUser')",
+                "$__sec = ConvertTo-SecureString ([Text.Encoding]::UTF8.GetString($__pw)) -AsPlainText -Force",
+                f"$__cred = New-Object System.Management.Automation.PSCredential({_ps_literal(h.user or '')}, $__sec)",
+                "Remove-Variable __pw",
+            ]
+            params.append("Credential = $__cred")
         return "\n".join([
+            *cred,
             f"$__code = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{code}'))",
             "$__p = @{ " + "; ".join(params) + " }",
             "$__r = Invoke-Command @__p -ArgumentList $__code, $global:RdInput -ScriptBlock {",

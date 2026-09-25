@@ -61,7 +61,7 @@ def test_host_form_and_save(tmp_path):
     from remotedev.config import delete_host, load_config, read_hosts_raw, save_host
 
     cdir = tmp_path / "cfg"
-    form = {"os": "linux", "backend": "ssh", "host": "192.168.1.20", "user": "claude-dev", "port": "2222",
+    form = {"kind": "ssh-linux", "host": "192.168.1.20", "user": "claude-dev", "port": "2222",
             "key": r"C:\Users\me\.ssh\claude_dev", "ssh_alias": "", "use_ssl": False, "dev": True,
             "allowed_paths": "/home/claude-dev/projects/a\n\n  /home/claude-dev/projects/b \n"}
     data = ui.form_to_host(form)
@@ -72,7 +72,8 @@ def test_host_form_and_save(tmp_path):
 
     # modification + renommage : les champs hors formulaire sont conservés
     raw = {**read_hosts_raw(cdir)["srv"], "docker": {"enabled": True}}
-    local = ui.form_to_host({**ui.host_to_form(raw), "backend": "local", "dev": False}, raw)
+    local = ui.form_to_host({**ui.host_to_form(raw), "kind": "local", "dev": False,
+                                                            "allowed_paths": str(tmp_path)}, raw)
     assert "host" not in local and local["docker"] == {"enabled": True} and local["permissions"] == ["read"]
     save_host("srv2", local, old_name="srv", config_dir=cdir)
     assert list(read_hosts_raw(cdir)) == ["srv2"] and (cdir / "hosts.yaml.bak").exists()
@@ -82,7 +83,7 @@ def test_host_form_and_save(tmp_path):
     with pytest.raises(ValueError):
         ui.form_to_host({**form, "allowed_paths": "  "})
     # PowerShell Remoting : Windows forcé, port et HTTPS rangés sous winrm:, pas d'utilisateur
-    win = ui.form_to_host({**form, "backend": "winrm", "os": "linux", "use_ssl": True,
+    win = ui.form_to_host({**form, "kind": "winrm", "use_ssl": True,
                            "allowed_paths": "C:\\Projet\\Test"})
     assert win["os"] == "windows" and "user" not in win and "port" not in win
     assert win["winrm"] == {"use_ssl": True, "port": 2222}
@@ -91,8 +92,57 @@ def test_host_form_and_save(tmp_path):
     assert load_config(cdir).hosts["pc-win"].winrm.port == 2222
     delete_host("pc-win", config_dir=cdir)
 
+    # SSH vers Windows PowerShell 5.1
+    ps51 = ui.form_to_host({**form, "kind": "ssh-ps51", "allowed_paths": "C:/Projet"})
+    assert ps51["os"] == "windows" and ps51["ps_exe"] == "powershell"
+    assert ui.host_to_form(ps51)["kind"] == "ssh-ps51"
+    assert ui.host_to_form({**ps51, "ps_exe": "pwsh"})["kind"] == "ssh-pwsh"
+
     delete_host("srv2", config_dir=cdir)
     assert load_config(cdir).hosts == {}
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="DPAPI : Windows uniquement")
+def test_password_auth(tmp_path):
+    from remotedev import credentials
+    from remotedev.backends.powershell_backend import WinRMBackend
+    from remotedev.backends.ssh_backend import SSHBackend
+    from remotedev.config import delete_host, load_config, save_host
+
+    cdir = tmp_path / "cfg"
+    base = {"kind": "ssh-linux", "host": "10.0.0.5", "user": "bob", "port": "", "key": "C:/k", "ssh_alias": "",
+            "use_ssl": False, "dev": False, "allowed_paths": "/srv/app", "auth": "password"}
+    data = ui.form_to_host(base)
+    assert data["auth"] == "password" and "key" not in data  # la clé est ignorée en mode mot de passe
+    with pytest.raises(ValueError):  # identifiant obligatoire
+        save_host("x", ui.form_to_host({**base, "user": ""}), config_dir=cdir)
+    save_host("srv", data, config_dir=cdir)
+    credentials.set_password("srv", "p@ss 'é", cdir)
+    assert "p@ss" not in (cdir / "credentials.dat").read_text()
+    assert "p@ss" not in (cdir / "hosts.yaml").read_text()
+
+    host = load_config(cdir).hosts["srv"]
+    ssh = SSHBackend(host)
+    argv, env = ssh.ssh_argv(), ssh.env()
+    assert "BatchMode=no" in argv and "-i" not in argv and not any("p@ss" in a for a in argv)
+    assert env["SSH_ASKPASS_REQUIRE"] == "force" and env["RD_ASKPASS_HOST"] == "srv"
+    askpass = [sys.executable, str(ROOT / "remotedev" / "askpass.py")]
+    out = subprocess.run(askpass + ["bob@10.0.0.5's password:"], env=env, capture_output=True)
+    assert out.returncode == 0 and out.stdout == "p@ss 'é\n".encode("utf-8")  # UTF-8 quelle que soit la console
+    out = subprocess.run(askpass + ["Are you sure you want to continue connecting (yes/no)?"], env=env,
+                         capture_output=True, text=True)
+    assert out.returncode == 1 and out.stdout == ""
+
+    save_host("pc", ui.form_to_host({**base, "kind": "winrm", "allowed_paths": "C:/P"}), config_dir=cdir)
+    credentials.set_password("pc", "w1n", cdir)
+    wrapper = WinRMBackend(load_config(cdir).hosts["pc"]).wrapper("Write-Output 1")
+    assert "Credential = $__cred" in wrapper and "w1n" not in wrapper
+
+    # repasser en authentification par défaut efface le mot de passe
+    save_host("srv", ui.form_to_host({**base, "auth": "default"}), old_name="srv", config_dir=cdir)
+    assert not credentials.has_password("srv", cdir)
+    delete_host("pc", config_dir=cdir)
+    assert not credentials.has_password("pc", cdir)
 
 
 def _free_port() -> int:
