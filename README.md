@@ -30,6 +30,38 @@ Prérequis sur le PC qui exécute le MCP : Python ≥ 3.10, client OpenSSH (`ssh
 uniquement si un hôte utilise le backend `winrm`. Paramiko n'est pas utilisé : on passe par
 le client OpenSSH, qui gère `~/.ssh/config`, `known_hosts` et `ssh-agent`.
 
+### Lancer et surveiller : `remotedev.cmd` et la mini-interface
+
+![Mini-interface RemoteDev](docs/ui.png)
+
+Double-cliquer sur `remotedev.cmd` ouvre la fenêtre (le venv est créé automatiquement la
+première fois). Elle affiche :
+- l'état du mode HTTP : arrêté, démarrage, en cours ou échec (avec les dernières lignes de
+  `logs/http.log`), le mode, le temps restant ;
+- l'URL du connecteur, masquée par défaut, avec les boutons Afficher et Copier ;
+- les instances stdio lancées par Claude Desktop / Code ;
+- les boutons Démarrer (durée, tunnel, écriture DEV avec confirmation) et Arrêter ;
+- un test de connexion à chaque machine, avec la latence ;
+- les dernières actions du journal d'audit (OK / REFUS / ERREUR, `[http]` pour les appels
+  distants).
+
+L'interface n'ouvre aucun port. Elle lit `logs/run/*.json`, que chaque instance écrit
+(ce dossier contient l'URL secrète et n'est jamais commité). Fermer la fenêtre n'arrête pas
+le serveur, qui garde son arrêt automatique.
+
+En ligne de commande :
+
+```powershell
+remotedev                      # mini-interface
+remotedev http --minutes 20    # mode HTTP dans la console
+remotedev status               # instances en cours (+ URL)
+remotedev stop                 # arrête l'instance HTTP proprement (cloudflared compris)
+remotedev check                # teste la connexion à chaque machine
+```
+
+Sous Linux/macOS : `./remotedev.sh` avec les mêmes commandes (l'interface nécessite
+`python3-tk`).
+
 ### Claude Code
 
 ```powershell
@@ -246,6 +278,9 @@ vérifie aussi un serveur MCP complet via stdio. Pour valider le transport SSH c
 REMOTEDEV_SSH_TEST="claude-dev@127.0.0.1:2222:/chemin/cle:/home/claude-dev/projects" pytest
 ```
 
+La mini-interface est testée sous Linux (Xvfb, Python 3.12). Elle n'a pas été testée sous
+Windows, et `remotedev.cmd` non plus.
+
 Le mode HTTP est testé en local (secret, 404, mode SAFE, analyse de la sortie de
 cloudflared avec un faux binaire). Le passage par un vrai tunnel trycloudflare n'a pas pu
 être testé.
@@ -258,6 +293,9 @@ réelles, WinRM réseau, Windows PowerShell 5.1.
 ```
 server.py                      point d'entrée (stdio, ou --http)
 remotedev/http_remote.py       mode HTTP à la demande + Cloudflare Quick Tunnel
+remotedev/state.py, ui.py      état des instances, mini-interface tkinter
+remotedev/health.py            test de connexion aux machines
+remotedev.cmd, remotedev.sh    lanceurs
 remotedev/app.py               construction du serveur, filtrage par mode
 remotedev/runtime.py           exécution, préambules de scripts, audit, décorateur @tool
 remotedev/config.py            modèles pydantic de hosts.yaml / policies.yaml

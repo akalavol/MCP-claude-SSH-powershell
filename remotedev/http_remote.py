@@ -20,8 +20,10 @@ import re
 import secrets
 import shutil
 import sys
+import time
 from typing import Any
 
+from . import state
 from .config import Config, load_config
 from .runtime import rt
 
@@ -123,23 +125,47 @@ async def serve(port: int = 8765, tunnel: bool = True, minutes: int = 60, allow_
 
     proc = None
     base = f"http://127.0.0.1:{port}"
-    if tunnel:
-        proc, base = await _start_tunnel(port)
-    print(
-        "\n=== RemoteDev HTTP ===\n"
-        f"mode        : {config.policies.mode.upper()}\n"
-        f"arrêt auto  : dans {minutes} min (Ctrl+C pour arrêter avant)\n"
-        f"URL MCP     : {base}/{token}/mcp\n"
-        "À coller dans ChatGPT > Paramètres > Applications > Créer, authentification : aucune.\n"
-        "Cette URL EST le mot de passe : ne la partagez pas. Elle meurt à l'arrêt du serveur.\n",
-        file=sys.stderr, flush=True,
-    )
+    started = time.time()
+    expires = started + minutes * 60
+    info = {"transport": "http", "mode": config.policies.mode, "port": port, "tunnel": tunnel,
+            "started_at": started, "expires_at": expires}
+    reason = "arrêt demandé"
     try:
-        await asyncio.wait_for(asyncio.shield(serve_task), timeout=minutes * 60)
-    except asyncio.TimeoutError:
-        print("[remotedev] durée écoulée : arrêt.", file=sys.stderr)
+        state.write({**info, "status": "démarrage du tunnel" if tunnel else "en cours"})
+        if tunnel:
+            proc, base = await _start_tunnel(port)
+        url = f"{base}/{token}/mcp"
+        state.write({**info, "status": "en cours", "url": url})
+        print(
+            "\n=== RemoteDev HTTP ===\n"
+            f"mode        : {config.policies.mode.upper()}\n"
+            f"arrêt auto  : dans {minutes} min (Ctrl+C, `remotedev stop` ou l'interface pour arrêter avant)\n"
+            f"URL MCP     : {url}\n"
+            "À coller dans ChatGPT > Paramètres > Applications > Créer, authentification : aucune.\n"
+            "Cette URL EST le mot de passe : ne la partagez pas. Elle meurt à l'arrêt du serveur.\n",
+            file=sys.stderr, flush=True,
+        )
+        while True:
+            if serve_task.done():
+                reason = "serveur arrêté"
+                break
+            if state.stop_requested():
+                break
+            if time.time() >= expires:
+                reason = "durée écoulée"
+                break
+            if proc is not None and proc.returncode is not None:
+                reason = "tunnel cloudflared arrêté"
+                break
+            await asyncio.sleep(1)
+        print(f"[remotedev] {reason} : arrêt.", file=sys.stderr, flush=True)
     finally:
         server.should_exit = True
         if proc and proc.returncode is None:
             proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                proc.kill()
         await serve_task
+        state.remove()

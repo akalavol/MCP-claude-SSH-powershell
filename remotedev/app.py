@@ -75,10 +75,46 @@ def build_server(config: Config | None = None, server_kwargs: dict | None = None
     return server
 
 
+def _print_status() -> None:
+    from . import state
+
+    insts = state.instances()
+    if not insts:
+        print("RemoteDev : aucune instance en cours.")
+        return
+    for inst in insts:
+        print("● " + state.describe(inst) + f" — {inst.get('status', '')}")
+        if inst.get("url"):
+            print(f"    URL : {inst['url']}")
+
+
+def _stop(target: str) -> None:
+    from . import state
+
+    insts = [i for i in state.instances() if i.get("transport") == "http"]
+    if target != "all":
+        insts = [i for i in insts if str(i["pid"]) == target]
+    if not insts:
+        print("Aucune instance HTTP à arrêter. (Une instance stdio s'arrête en fermant Claude Desktop.)")
+        return
+    for inst in insts:
+        state.request_stop(int(inst["pid"]))
+        print(f"arrêt demandé : pid {inst['pid']}")
+
+
+def _check() -> None:
+    import asyncio
+
+    from .health import check_all
+
+    for h in asyncio.run(check_all(load_config())):
+        print(f"{'OK ' if h.ok else 'KO '} {h.name:<20} {h.seconds:5.1f}s  {h.detail}")
+
+
 def main(argv: list[str] | None = None) -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="MCP RemoteDev")
+    parser = argparse.ArgumentParser(description="MCP RemoteDev (sans option : serveur stdio pour Claude Desktop/Code)")
     parser.add_argument("--http", action="store_true",
                         help="mode HTTP à la demande (ChatGPT, claude.ai) au lieu de stdio")
     parser.add_argument("--no-tunnel", action="store_true", help="ne pas lancer cloudflared (HTTP local seul)")
@@ -86,20 +122,50 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--minutes", type=int, default=60, help="arrêt automatique (mode HTTP)")
     parser.add_argument("--allow-dev", action="store_true",
                         help="mode HTTP : garder le mode de policies.yaml au lieu de forcer SAFE")
+    parser.add_argument("--status", action="store_true", help="afficher les instances en cours")
+    parser.add_argument("--stop", nargs="?", const="all", metavar="PID", help="arrêter l'instance HTTP (toutes par défaut)")
+    parser.add_argument("--check", action="store_true", help="tester la connexion à chaque machine")
+    parser.add_argument("--ui", action="store_true", help="ouvrir la mini-interface")
     args = parser.parse_args(argv)
     try:
+        if args.status:
+            return _print_status()
+        if args.stop:
+            return _stop(args.stop)
+        if args.check:
+            return _check()
+        if args.ui:
+            from .ui import run_ui
+
+            return run_ui()
         if args.http:
             import asyncio
 
+            from . import state
             from .http_remote import serve
 
             try:
                 asyncio.run(serve(args.port, not args.no_tunnel, max(1, args.minutes), args.allow_dev))
             except KeyboardInterrupt:
-                pass
+                state.remove()
             return
         server = build_server()
     except (FileNotFoundError, ValueError) as exc:
         raise SystemExit(f"[remotedev] configuration invalide : {exc}")
+
+    import atexit
+    import time
+
+    from . import state
+
+    state.write({"transport": "stdio", "mode": server_mode(), "status": "en cours (lancé par le client MCP)",
+                 "started_at": time.time()})
+    atexit.register(state.remove)
     print(f"[remotedev {__version__}] démarré (stdio)", file=sys.stderr)
     server.run()
+
+
+def server_mode() -> str:
+    from .runtime import rt
+
+    return rt().policies.mode
