@@ -70,5 +70,6 @@ timeouts:          # secondes
   build: 1800
   git_pull: 180
   docker_compose: 900
+  install: 900
 
 audit_log: logs/audit.log

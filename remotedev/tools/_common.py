@@ -25,13 +25,20 @@ def guard(host: HostConfig, path: str, mode: str, var: str = "P") -> str:
     return f"${var} = Rd-Guard {ps_quote(path)} {ps_quote(mode)}\n"
 
 
-def run_argv(host: HostConfig, argv: list[str], cwd_var: str | None = "P") -> str:
-    """Exécute une commande (liste d'arguments, jamais une chaîne) dans le dossier $cwd_var."""
+def run_argv(host: HostConfig, argv: list[str], cwd_var: str | None = "P", check: bool = False) -> str:
+    """Exécute une commande (liste d'arguments, jamais une chaîne) dans le dossier $cwd_var.
+    check=True : arrête le script si la commande échoue (pour enchaîner plusieurs étapes)."""
     if host.is_posix_shell:
         cd = f'cd "${cwd_var}" || exit 2\n' if cwd_var else ""
-        return cd + " ".join(sh_quote(a) for a in argv) + " 2>&1\n"
+        # 97/98 sont réservés aux gardes de sécurité : un échec de commande ne doit pas s'y confondre.
+        stop = ' || { rc=$?; case $rc in 97|98) rc=1 ;; esac; exit $rc; }' if check else ""
+        return cd + " ".join(sh_quote(a) for a in argv) + " 2>&1" + stop + "\n"
     cd = f"Set-Location -LiteralPath ${cwd_var}\n" if cwd_var else ""
-    return cd + f"Rd-Exec {ps_quote(argv[0])} {ps_array(argv[1:]) if argv[1:] else '@()'}\n"
+    line = f"Rd-Exec {ps_quote(argv[0])} {ps_array(argv[1:]) if argv[1:] else '@()'}\n"
+    if check:
+        line += ("if ($global:RD_RC -ne 0) { $__c = $global:RD_RC; if ($__c -eq 97 -or $__c -eq 98) { $__c = 1 }; "
+                 f"Rd-Fail $__c ('échec : ' + {ps_quote(argv[0])}) }}\n")
+    return cd + line
 
 
 def run_trusted(host: HostConfig, command: str, cwd_var: str = "P") -> str:

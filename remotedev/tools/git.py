@@ -76,3 +76,26 @@ async def git_checkout(host: str, project: str, branch: str, create: bool = Fals
     validate_branch(branch)
     args = ["checkout", "-b", branch] if create else ["checkout", branch, "--"]
     return await _git(host, project, args, level="dev")
+
+
+@tool("dev", read_only=False, destructive=True)
+async def restore_file(host: str, project: str, file: str) -> str:
+    """Annule les modifications non commitées d'UN fichier suivi par git (git checkout -- fichier) :
+    il reprend son contenu de l'index (le dernier état commité, ou indexé par l'utilisateur).
+    Un fichier par appel, volontairement : restaurer tout le projet effacerait aussi le travail
+    en cours de l'utilisateur. Sans effet sur un fichier non suivi (nouveau fichier)."""
+    r = rt()
+    h = r.host(host)
+    r.require(h, "dev")
+    p = r.project_path(h, project)
+    f = r.path(h, file, "write")  # refuse secrets et .git avant tout appel distant
+    body = guard(h, p, "list") + guard(h, f, "write", var="F")
+    # Un fichier ordinaire seulement : un dossier restaurerait tout son contenu.
+    if h.is_posix_shell:
+        body += '[ -f "$F" ] || { echo "pas un fichier : $F" >&2; exit 2; }\n'
+    else:
+        body += "if (-not (Test-Path -LiteralPath $F -PathType Leaf)) { Rd-Fail 2 ('pas un fichier : ' + $F) }\n"
+    # --literal-pathspecs : « * » ou « ? » dans le nom ne doivent jamais viser d'autres fichiers.
+    body += run_argv(h, GIT + ["--literal-pathspecs", "checkout", "--", f])
+    res = await r.run(h, body)
+    return r.format(res, f"restore_file {f}")

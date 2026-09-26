@@ -256,7 +256,7 @@ ne sont **pas exposés** à Claude : ils ne sont pas juste refusés.
 | Niveau | Outils |
 |---|---|
 | READ | `host_list`, `host_info`, `system_info`, `disk_usage`, `get_processes`, `get_services`, `list_files`, `read_file`, `file_info`, `search_files`, `git_status`, `git_diff`, `git_log`, `git_branch`, `docker_ps`, `docker_images`, `docker_logs`, `docker_compose_status`, `service_status`, `service_logs`, `read_logs` |
-| DEV | `write_file`, `patch_file`, `git_pull` (ff-only), `git_checkout`, `run_tests`, `run_build`, `docker_compose_up`, `docker_compose_down`, `docker_restart`, `restart_dev_service` |
+| DEV | `write_file`, `patch_file`, `restore_file`, `install_dependencies`, `git_pull` (ff-only), `git_checkout`, `run_tests`, `run_build`, `docker_compose_up`, `docker_compose_down`, `docker_restart`, `restart_dev_service` |
 | ADMIN | aucun, volontairement |
 
 Non exposés volontairement : commande arbitraire, `git push/commit/reset/clean/rebase`,
@@ -269,6 +269,16 @@ Non exposés volontairement : commande arbitraire, `git push/commit/reset/clean/
   existe), npm/pnpm/yarn, cargo, go, dotnet, make et docker compose. On peut aussi fixer
   `projects.<nom>.test` / `.build` dans `hosts.yaml`. `target` permet de relancer un seul
   test.
+- `install_dependencies` installe **dans le projet uniquement** : `npm ci` (ou pnpm/yarn
+  avec le lockfile), pip dans le venv du projet (`.venv` est créé s'il n'existe pas),
+  `cargo fetch`, `go mod download`, `dotnet restore`. Jamais d'installation globale ni de
+  sudo. Les étapes s'arrêtent à la première erreur. `ignore_scripts=true` désactive les
+  scripts `postinstall` npm. Sous Windows, `python` doit être un vrai Python, pas l'alias du
+  Microsoft Store.
+- `restore_file` annule les modifications d'**un** fichier suivi par git (retour à
+  l'index). Il refuse les dossiers, ne traite jamais `*` comme un joker, et refuse secrets et
+  `.git`. Il n'y a pas de restauration du projet entier, volontairement : elle effacerait
+  aussi ton propre travail en cours.
 - Toutes les écritures sont atomiques (fichier temporaire + renommage).
 - `.git/` est protégé en écriture : un hook git, c'est de l'exécution de code.
 
