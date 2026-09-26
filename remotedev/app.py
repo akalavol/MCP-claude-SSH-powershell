@@ -25,6 +25,8 @@ RemoteDev donne un accès contrôlé à des projets sur des machines distantes.
 - Les fichiers secrets (.env, clés...) sont refusés : ne pas chercher à les contourner.
 - Boucle de travail : git_status -> lecture ciblée -> run_tests -> patch_file -> run_tests -> git_diff.
 - Préférer patch_file (remplacement exact et unique) à write_file pour modifier un fichier existant.
+- Pour vérifier une app web déployée : browser_open puis browser_snapshot / browser_click / browser_fill
+  (navigateur local, limité aux machines configurées, à localhost et à browser.allowed_origins).
 - Aucun outil ne commit, ne push, ni ne lance de commande arbitraire : c'est volontaire.
 """
 
@@ -68,12 +70,14 @@ def build_server(config: Config | None = None, server_kwargs: dict | None = None
     for spec in REGISTRY:
         if spec.level not in enabled:
             continue  # en mode SAFE, les outils DEV ne sont même pas visibles
+        if spec.func.__name__.startswith("browser_") and not config.policies.browser.enabled:
+            continue
         # Noms « wire » (camelCase) : acceptés par mcp 1.x et 2.x.
         ann = ToolAnnotations.model_validate({
             "readOnlyHint": spec.read_only,
             "destructiveHint": spec.destructive,
             "idempotentHint": spec.read_only,
-            "openWorldHint": False,
+            "openWorldHint": spec.func.__name__.startswith("browser_"),
         })
         server.tool(name=spec.func.__name__, description=spec.description, annotations=ann)(spec.func)
     return server

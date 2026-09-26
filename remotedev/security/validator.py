@@ -58,7 +58,7 @@ def audit_params(params: dict[str, Any]) -> dict[str, Any]:
     """Paramètres journalisables : jamais de contenu de fichier ni de patch."""
     out: dict[str, Any] = {}
     for k, v in params.items():
-        if k in ("content", "old_string", "new_string", "patch") and isinstance(v, str):
+        if k in ("content", "old_string", "new_string", "patch", "value") and isinstance(v, str):
             out[k] = {"len": len(v), "sha256": hashlib.sha256(v.encode()).hexdigest()[:16]}
         elif isinstance(v, str) and len(v) > 300:
             out[k] = v[:300] + "…"

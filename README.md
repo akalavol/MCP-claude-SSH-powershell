@@ -306,6 +306,26 @@ Non exposés volontairement : commande arbitraire, `git push/commit/reset/clean/
 - Toutes les écritures sont atomiques (fichier temporaire + renommage).
 - `.git/` est protégé en écriture : un hook git, c'est de l'exécution de code.
 
+### Navigateur (Playwright)
+
+Pour vérifier une application web déployée sur une cible : `browser_open`, `browser_snapshot`,
+`browser_screenshot`, `browser_console`, `browser_close` (READ) ; `browser_click`,
+`browser_fill`, `browser_press` (DEV). Chromium tourne **sans fenêtre, sur la machine du MCP**
+(pas sur la cible). Installation, une seule fois :
+
+```
+.venv\Scripts\python -m pip install playwright
+.venv\Scripts\python -m playwright install chromium
+```
+
+(sous Linux : `.venv/bin/python`, et `python -m playwright install --with-deps chromium`).
+
+Seules les origines autorisées sont joignables, **y compris pour les scripts, images et
+redirections** de la page : les machines de `hosts.yaml` et `localhost` (tout port), plus
+`browser.allowed_origins` dans `policies.yaml`. Les origines bloquées sont signalées dans la
+réponse. Les éléments se désignent par des sélecteurs Playwright :
+`role=button[name="Connexion"]`, `text=Mot de passe oublié`, `#id`.
+
 ## Modèle de sécurité et limites
 
 Ce que le MCP fait réellement :

@@ -200,6 +200,16 @@ class Timeouts(_Strict):
     docker_compose: int = 900
 
 
+class BrowserConfig(_Strict):
+    """Navigateur Playwright local (outils browser_*)."""
+    enabled: bool = True
+    headless: bool = True
+    # Origines autorisées en plus des machines de hosts.yaml et de localhost
+    # (ex. "https://app.exemple.fr", "http://192.168.1.60:3000"). "*" = tout le web.
+    allowed_origins: list[str] = Field(default_factory=list)
+    timeout: int = 30  # secondes par action
+
+
 class Policies(_Strict):
     mode: Literal["safe", "dev", "admin"] = "dev"
     secret_patterns: list[str] = Field(default_factory=list)
@@ -209,6 +219,7 @@ class Policies(_Strict):
     protect_git_dir: bool = True
     limits: Limits = Field(default_factory=Limits)
     timeouts: Timeouts = Field(default_factory=Timeouts)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
     audit_log: str = "logs/audit.log"
 
     @field_validator("secret_patterns")
