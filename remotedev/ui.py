@@ -718,6 +718,14 @@ def connection_hint(detail: str) -> str:
     if "trustedhosts" in d:
         return ("\nAjouter la machine aux TrustedHosts (PowerShell administrateur) : "
                 "Set-Item WSMan:\\localhost\\Client\\TrustedHosts -Value <hôte> -Concatenate")
+    if "autorité de certification inconnue" in d or "unknown certificate authority" in d \
+            or "untrusted root" in d or "non approuvé" in d:
+        return ("\nCertificat HTTPS de la cible non reconnu (auto-signé) : importer ce certificat dans les "
+                "autorités racines de confiance de ce PC, après avoir vérifié son empreinte sur la cible.")
+    if d.startswith("winrm") and ("pare-feu" in d or "firewall" in d or "cannot complete" in d
+                                  or "ne peut pas terminer" in d):
+        return ("\nCible injoignable en WinRM : sur la cible (PowerShell administrateur), « Enable-PSRemoting -Force », "
+                "et vérifier le pare-feu (port 5985, ou 5986 si HTTPS est coché).")
     if "'pwsh' is not recognized" in d or "pwsh: not found" in d or "pwsh : " in d:
         return "\nPowerShell 7 absent sur la cible : choisir « SSH → Windows (Windows PowerShell 5.1) »."
     return ""

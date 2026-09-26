@@ -28,7 +28,7 @@ async def check_host(host: HostConfig, timeout: int = 20) -> HostHealth:
         return HostHealth(host.name, True, res.stdout.strip().splitlines()[-1] if res.stdout.strip() else "ok",
                           res.duration)
     detail = "timeout" if res.timed_out else (res.stderr.strip().splitlines() or [f"exit {res.exit_code}"])[-1]
-    return HostHealth(host.name, False, detail[:200], res.duration)
+    return HostHealth(host.name, False, detail[:400], res.duration)
 
 
 async def check_all(config: Config) -> list[HostHealth]:
