@@ -71,4 +71,12 @@ timeouts:          # secondes
   git_pull: 180
   docker_compose: 900
 
+browser:           # outils browser_* (Playwright, sur la machine du MCP)
+  enabled: true
+  headless: true   # false : fenêtre Chromium visible
+  # Origines joignables en plus des machines de hosts.yaml et de localhost.
+  # "https://app.exemple.fr" (schéma + hôte + port exacts) ou "cdn.exemple.fr" (tout port).
+  allowed_origins: []
+  timeout: 30      # secondes par action
+
 audit_log: logs/audit.log

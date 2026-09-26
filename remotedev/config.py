@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 LEVELS = ("read", "dev", "admin")
 MODE_LEVELS = {"safe": {"read"}, "dev": {"read", "dev"}, "admin": {"read", "dev", "admin"}}
@@ -70,6 +70,13 @@ class HostConfig(_Strict):
     port: int | None = None
     key: str | None = None
     ssh_alias: str | None = None
+    # Empreinte attendue de la clé d'hôte (SHA256:…) : épinglée dans config/known_hosts.
+    host_key_sha256: str | None = None
+    # default : clé SSH (ssh) / compte Windows courant (winrm).
+    # password : identifiant `user` + mot de passe chiffré dans config/credentials.dat.
+    auth: Literal["default", "password"] = "default"
+    # SSH vers Windows : PowerShell lancé sur la cible (pwsh = 7, powershell = 5.1 intégré).
+    ps_exe: Literal["pwsh", "powershell"] = "pwsh"
     # Forcé à "powershell" pour Windows ; surchargeable pour les tests (pwsh sous Linux).
     shell: Literal["posix", "powershell"] | None = None
     permissions: list[Literal["read", "dev", "admin"]] = Field(default_factory=lambda: ["read"])
@@ -81,6 +88,21 @@ class HostConfig(_Strict):
     # Dossiers ajoutés en tête du PATH (ex. node installé via nvm, absent des sessions SSH non interactives).
     path_prepend: list[str] = Field(default_factory=list)
     winrm: WinRMConfig = Field(default_factory=WinRMConfig)
+    # Dossier de config d'origine (pour retrouver credentials.dat) ; renseigné par load_config.
+    _config_dir: Path | None = PrivateAttr(default=None)
+
+    def password_blob(self) -> bytes:
+        """Mot de passe chiffré (DPAPI) de cette machine ; erreur claire s'il manque."""
+        from . import credentials
+
+        blob = credentials.blob(self.name, self._config_dir)
+        if not blob:
+            raise RuntimeError(f"aucun mot de passe enregistré pour {self.name!r} (le saisir dans l'interface)")
+        return blob
+
+    def known_hosts_file(self) -> Path:
+        """Fichier known_hosts propre à RemoteDev (clés épinglées par host_key_sha256)."""
+        return (self._config_dir or resolve_config_dir()) / "known_hosts"
 
     @model_validator(mode="after")
     def _normalize(self) -> "HostConfig":
@@ -94,9 +116,22 @@ class HostConfig(_Strict):
             raise ValueError("le backend winrm exige le shell powershell")
         if self.backend in ("ssh", "winrm") and not (self.host or self.ssh_alias):
             raise ValueError("'host' ou 'ssh_alias' requis")
+        if self.auth == "password":
+            if self.backend == "local":
+                raise ValueError("pas de mot de passe pour le backend local")
+            if not self.user and not (self.backend == "ssh" and self.ssh_alias):
+                raise ValueError("un identifiant (user) est requis avec un mot de passe")
         for value in (self.host, self.ssh_alias):
             if value is not None and not _HOST_RE.match(value):
                 raise ValueError(f"nom d'hôte invalide : {value!r}")
+        if self.host_key_sha256:
+            from .hostkey import normalize_fingerprint
+
+            if self.backend != "ssh":
+                raise ValueError("host_key_sha256 : backend ssh uniquement")
+            if self.ssh_alias:
+                raise ValueError("host_key_sha256 incompatible avec ssh_alias (utiliser host)")
+            self.host_key_sha256 = normalize_fingerprint(self.host_key_sha256)
         if self.user is not None and not _NAME_RE.match(self.user.replace("\\", "")):
             raise ValueError(f"utilisateur invalide : {self.user!r}")
         if self.key:
@@ -165,6 +200,16 @@ class Timeouts(_Strict):
     docker_compose: int = 900
 
 
+class BrowserConfig(_Strict):
+    """Navigateur Playwright local (outils browser_*)."""
+    enabled: bool = True
+    headless: bool = True
+    # Origines autorisées en plus des machines de hosts.yaml et de localhost
+    # (ex. "https://app.exemple.fr", "http://192.168.1.60:3000"). "*" = tout le web.
+    allowed_origins: list[str] = Field(default_factory=list)
+    timeout: int = 30  # secondes par action
+
+
 class Policies(_Strict):
     mode: Literal["safe", "dev", "admin"] = "dev"
     secret_patterns: list[str] = Field(default_factory=list)
@@ -174,6 +219,7 @@ class Policies(_Strict):
     protect_git_dir: bool = True
     limits: Limits = Field(default_factory=Limits)
     timeouts: Timeouts = Field(default_factory=Timeouts)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
     audit_log: str = "logs/audit.log"
 
     @field_validator("secret_patterns")
@@ -208,9 +254,70 @@ def _read_yaml(path: Path) -> dict:
     return data
 
 
+def resolve_config_dir(config_dir: str | os.PathLike | None = None) -> Path:
+    base = Path(__file__).resolve().parent.parent
+    return Path(config_dir or os.environ.get("REMOTEDEV_CONFIG_DIR") or base / "config")
+
+
+# --- édition de hosts.yaml (utilisée par l'interface) ---------------------------------
+
+_HOSTS_HEADER = (
+    "# Géré par l'interface RemoteDev (bouton Ajouter / Modifier). Les commentaires ne sont pas conservés.\n"
+    "# Référence des champs : hosts.example.yaml\n\n"
+)
+
+
+def read_hosts_raw(config_dir: str | os.PathLike | None = None) -> dict[str, dict]:
+    """Contenu brut de hosts.yaml (vide si le fichier n'existe pas)."""
+    raw = _read_yaml(resolve_config_dir(config_dir) / "hosts.yaml").get("hosts") or {}
+    return {str(k): dict(v or {}) for k, v in raw.items()}
+
+
+def _write_hosts_raw(hosts: dict[str, dict], config_dir: str | os.PathLike | None) -> None:
+    path = resolve_config_dir(config_dir) / "hosts.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.with_name("hosts.yaml.bak").write_bytes(path.read_bytes())
+    body = yaml.safe_dump({"hosts": hosts}, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    tmp = path.with_name("hosts.yaml.tmp")
+    tmp.write_text(_HOSTS_HEADER + body, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def save_host(name: str, data: dict, old_name: str | None = None,
+              config_dir: str | os.PathLike | None = None) -> HostConfig:
+    """Valide puis enregistre une machine. `old_name` : renommage d'une entrée existante."""
+    if not _NAME_RE.match(name):
+        raise ValueError(f"nom de machine invalide : {name!r} (lettres, chiffres, . _ @ -)")
+    hc = HostConfig.model_validate({**data, "name": name})
+    hosts = read_hosts_raw(config_dir)
+    if name in hosts and name != old_name:
+        raise ValueError(f"une machine nommée {name!r} existe déjà")
+    if old_name and old_name != name:
+        hosts = {(name if k == old_name else k): v for k, v in hosts.items()}
+    hosts[name] = data
+    _write_hosts_raw(hosts, config_dir)
+    from . import credentials
+
+    if old_name and old_name != name:
+        credentials.rename(old_name, name, config_dir)
+    if hc.auth != "password":
+        credentials.delete_password(name, config_dir)
+    return hc
+
+
+def delete_host(name: str, config_dir: str | os.PathLike | None = None) -> None:
+    from . import credentials
+
+    hosts = read_hosts_raw(config_dir)
+    if hosts.pop(name, None) is not None:
+        _write_hosts_raw(hosts, config_dir)
+    credentials.delete_password(name, config_dir)
+
+
 def load_config(config_dir: str | os.PathLike | None = None) -> Config:
     base = Path(__file__).resolve().parent.parent
-    cdir = Path(config_dir or os.environ.get("REMOTEDEV_CONFIG_DIR") or base / "config")
+    cdir = resolve_config_dir(config_dir)
     hosts_file = cdir / "hosts.yaml"
     if not hosts_file.exists():
         raise FileNotFoundError(
@@ -222,6 +329,7 @@ def load_config(config_dir: str | os.PathLike | None = None) -> Config:
         if not _NAME_RE.match(str(name)):
             raise ValueError(f"nom d'hôte MCP invalide : {name!r}")
         hc = HostConfig.model_validate({**(data or {}), "name": str(name)})
+        hc._config_dir = cdir
         hosts[str(name)] = hc
     policies = Policies.model_validate(_read_yaml(cdir / "policies.yaml"))
     env_mode = os.environ.get("REMOTEDEV_MODE")

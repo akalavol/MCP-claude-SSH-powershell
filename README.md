@@ -23,11 +23,12 @@ cd C:\Projet\mcp-remotedev
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy config\hosts.example.yaml config\hosts.yaml   # puis l'adapter
+copy config\hosts.example.yaml config\hosts.yaml   # ou : ajouter les machines dans l'interface
 ```
 
-Prérequis sur le PC qui exécute le MCP : Python ≥ 3.10, client OpenSSH (`ssh`), et `pwsh`
-uniquement si un hôte utilise le backend `winrm`. Paramiko n'est pas utilisé : on passe par
+Prérequis sur le PC qui exécute le MCP : Python ≥ 3.10 et le client OpenSSH (`ssh`). Pour
+les backends `winrm` et `local` sous Windows, `pwsh` (PowerShell 7) est utilisé s'il est
+installé, sinon le Windows PowerShell 5.1 intégré. Paramiko n'est pas utilisé : on passe par
 le client OpenSSH, qui gère `~/.ssh/config`, `known_hosts` et `ssh-agent`.
 
 ### Lancer et surveiller : `remotedev.cmd` et la mini-interface
@@ -44,6 +45,39 @@ première fois). Elle affiche :
 - un test de connexion à chaque machine, avec la latence ;
 - les dernières actions du journal d'audit (OK / REFUS / ERREUR, `[http]` pour les appels
   distants).
+
+#### Ajouter une machine depuis l'interface
+
+Dans la section Machines, les boutons **Ajouter… / Modifier… / Supprimer** remplissent
+`config/hosts.yaml` à ta place. Le formulaire propose les types de connexion suivants :
+
+| Type | Ce que ça fait |
+|---|---|
+| SSH → Linux (shell) | `ssh` + `sh` sur la cible |
+| SSH → Windows (PowerShell 7) | `ssh` + `pwsh` sur la cible (recommandé pour Windows) |
+| SSH → Windows (Windows PowerShell 5.1) | `ssh` + `powershell.exe` (`ps_exe: powershell`) |
+| PowerShell Remoting (WinRM) → Windows | `Invoke-Command -ComputerName` depuis ce PC |
+| Ce PC (local) | exécution directe, surtout pour tester |
+
+Authentification possible : **clé SSH** (ou compte Windows actuel pour WinRM), ou
+**identifiant + mot de passe** (`auth: password`). Le mot de passe n'est jamais écrit dans
+`hosts.yaml` : il est chiffré avec DPAPI (lié à ton compte Windows sur ce PC) dans
+`config/credentials.dat`, qui est ignoré par git. En SSH, il est transmis à `ssh` par
+`SSH_ASKPASS` (`remotedev/askpass.py`), jamais sur la ligne de commande. askpass ne répond
+qu'aux invites de mot de passe. En WinRM, il n'est déchiffré que dans le processus
+PowerShell qui crée le `PSCredential`. Le mot de passe n'est disponible que sous Windows ;
+une clé SSH reste préférable.
+
+**Tester la connexion** vérifie l'accès avant d'enregistrer. L'empreinte d'un serveur SSH
+inconnu n'est jamais acceptée automatiquement. Deux possibilités :
+- renseigner **Empreinte SHA256** (`host_key_sha256`), relevée sur la cible avec
+  `ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub` (Windows) ou
+  `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` (Linux). RemoteDev lit la clé avec
+  `ssh-keyscan`, ne l'enregistre dans `config/known_hosts` que si son empreinte correspond,
+  puis se connecte avec `StrictHostKeyChecking=yes` sur ce seul fichier ;
+- ou lancer une fois `ssh login@hôte` dans un terminal et vérifier l'empreinte avant « yes ».
+
+Après une modification, redémarre les serveurs déjà lancés.
 
 L'interface n'ouvre aucun port. Elle lit `logs/run/*.json`, que chaque instance écrit
 (ce dossier contient l'URL secrète et n'est jamais commité). Fermer la fenêtre n'arrête pas
@@ -230,9 +264,9 @@ s'effondre. Ne le faites pas.
 
 ### Backend WinRM (déconseillé)
 
-`backend: winrm` exécute `Invoke-Command -ComputerName` depuis le `pwsh` local, avec
-l'identité Windows courante. Hors domaine Active Directory, il faut HTTPS ou TrustedHosts,
-ainsi que des identifiants non interactifs, que ce backend ne gère pas. L'endpoint par
+`backend: winrm` exécute `Invoke-Command -ComputerName` depuis le PowerShell local, avec
+l'identité Windows courante, ou avec `user` + mot de passe enregistré (`auth: password`).
+Hors domaine Active Directory, il faut en plus HTTPS ou TrustedHosts. L'endpoint par
 défaut exécute Windows PowerShell 5.1 : les scripts générés restent compatibles 5.1. Un
 endpoint JEA en mode `NoLanguage` n'est pas compatible, car le MCP envoie des scripts.
 **Seule la logique de ce backend est testée ; la couche réseau WinRM, elle, ne l'est pas.**
@@ -271,6 +305,26 @@ Non exposés volontairement : commande arbitraire, `git push/commit/reset/clean/
   test.
 - Toutes les écritures sont atomiques (fichier temporaire + renommage).
 - `.git/` est protégé en écriture : un hook git, c'est de l'exécution de code.
+
+### Navigateur (Playwright)
+
+Pour vérifier une application web déployée sur une cible : `browser_open`, `browser_snapshot`,
+`browser_screenshot`, `browser_console`, `browser_close` (READ) ; `browser_click`,
+`browser_fill`, `browser_press` (DEV). Chromium tourne **sans fenêtre, sur la machine du MCP**
+(pas sur la cible). Installation, une seule fois :
+
+```
+.venv\Scripts\python -m pip install playwright
+.venv\Scripts\python -m playwright install chromium
+```
+
+(sous Linux : `.venv/bin/python`, et `python -m playwright install --with-deps chromium`).
+
+Seules les origines autorisées sont joignables, **y compris pour les scripts, images et
+redirections** de la page : les machines de `hosts.yaml` et `localhost` (tout port), plus
+`browser.allowed_origins` dans `policies.yaml`. Les origines bloquées sont signalées dans la
+réponse. Les éléments se désignent par des sélecteurs Playwright :
+`role=button[name="Connexion"]`, `text=Mot de passe oublié`, `#id`.
 
 ## Modèle de sécurité et limites
 

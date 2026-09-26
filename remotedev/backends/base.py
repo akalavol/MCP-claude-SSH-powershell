@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import shutil
+import sys
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 
 # Codes de sortie réservés émis par les gardes des scripts distants.
 RC_DENIED = 97
@@ -23,6 +26,16 @@ PS_BOOTSTRAP = (
 )
 PS_BOOTSTRAP_ENCODED = base64.b64encode(PS_BOOTSTRAP.encode("utf-16-le")).decode("ascii")
 PWSH_ARGS = ["-NoProfile", "-NonInteractive", "-NoLogo", "-EncodedCommand", PS_BOOTSTRAP_ENCODED]
+
+
+@lru_cache(maxsize=1)
+def local_pwsh() -> str:
+    """PowerShell de la machine du MCP : pwsh (7) si installé, sinon Windows PowerShell 5.1."""
+    if shutil.which("pwsh"):
+        return "pwsh"
+    if sys.platform == "win32" and shutil.which("powershell"):
+        return "powershell"
+    return "pwsh"  # l'erreur « introuvable » mentionnera pwsh
 
 
 @dataclass
@@ -43,7 +56,8 @@ def ps_stdin(script: str, data: bytes | None) -> bytes:
     return b"\n".join(lines) + b"\n"
 
 
-async def run_process(argv: list[str], stdin: bytes | None, timeout: int) -> ExecResult:
+async def run_process(argv: list[str], stdin: bytes | None, timeout: int,
+                      env: dict[str, str] | None = None) -> ExecResult:
     """Lance un processus local. stdin n'hérite JAMAIS du flux stdio MCP."""
     start = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
@@ -51,6 +65,7 @@ async def run_process(argv: list[str], stdin: bytes | None, timeout: int) -> Exe
         stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(stdin), timeout=timeout)

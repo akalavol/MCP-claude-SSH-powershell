@@ -4,4 +4,10 @@ __pycache__/
 .pytest_cache/
 logs/*.log
 config/hosts.yaml
+config/hosts.yaml.bak
+config/hosts.yaml.tmp
+config/credentials.dat
+config/credentials.dat.tmp
 logs/run/
+config/known_hosts
+config/known_hosts.tmp
