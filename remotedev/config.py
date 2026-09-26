@@ -163,6 +163,7 @@ class Timeouts(_Strict):
     build: int = 1800
     git_pull: int = 180
     docker_compose: int = 900
+    install: int = 900
 
 
 class Policies(_Strict):
